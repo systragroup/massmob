@@ -7,8 +7,8 @@ from tqdm import tqdm
 import shutil
 import zlib
 from concurrent.futures import ProcessPoolExecutor
-from massmodel.model import massmodel
-from massmodel.engine import mode, tracks, stops, analysis, mapmatching, clustering, volumes
+from massmob.model import massmodel
+from massmob.engine import mode, tracks, stops, analysis, mapmatching, clustering, volumes
 
 
 class Model():

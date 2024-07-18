@@ -1,4 +1,4 @@
-from massmodel.io import plot
+from massmob.io import plot
 
 
 class PlotModel():
