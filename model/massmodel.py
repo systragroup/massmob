@@ -6,8 +6,8 @@ from tqdm import tqdm
 import shutil
 import zlib
 from concurrent.futures import ProcessPoolExecutor
-from fcdmodel.model import model, plotmodel
-from fcdmodel.io import io
+from massmob.model import model, plotmodel
+from massmob.io import io
 
 
 def read_zippedpickles(folder, omitted_attributes=(), only_attributes=None):
@@ -17,7 +17,7 @@ def read_zippedpickles(folder, omitted_attributes=(), only_attributes=None):
         for file in files
         if '.zippedpickle' in file
     ]
-    self = FCDModel()
+    self = MassModel()
     iterator = tqdm(keys)
     for key in iterator:
         if key in omitted_attributes:
@@ -33,7 +33,7 @@ def read_zippedpickles(folder, omitted_attributes=(), only_attributes=None):
     return self
 
 
-class FCDModel(
+class MassModel(
         model.Model,
         plotmodel.PlotModel
         ):
@@ -41,7 +41,7 @@ class FCDModel(
     def __init__(self, points=None, MAX_ACCURACY=100):
         """
         points : DataFrame with columns ['phone_id','latitude','logitude','eventDate','accuracy']
-        Initialise l'objet FCData avec les points bruts
+        Initialise l'objet MassModel avec les points bruts
         """
         self.points = points
     

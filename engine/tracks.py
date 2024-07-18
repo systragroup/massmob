@@ -3,7 +3,7 @@ import geopandas as gpd
 import numpy as np
 import ciso8601
 from shapely.geometry import LineString, Point
-from fcdmodel.engine import stops
+from massmodel.engine import stops
 
 
 def tracks_from_points_with_stops(points):

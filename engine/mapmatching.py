@@ -21,8 +21,8 @@ import os
 from glob import glob
 import tempfile
 import importlib
-from fcdmodel.engine import utils
-from fcdmodel.engine import road
+from massmodel.engine import utils
+from massmodel.engine import road
 
 
 class RoadLinks:
@@ -108,20 +108,20 @@ def points_to_tracks(points, by='track_id', time_col='eventDate8601', seq_col='n
 
 
 def mapmatching_parallel(
-        fcd_points, road_links, road_link_weight='time', workers=2, verbose=True, paths=[],
+        points, road_links, road_link_weight='time', workers=2, verbose=True, paths=[],
         ptt_kwargs={}, mapmatching_kwargs={}):
 
     if verbose:
         print('---- prepare data…')
-    gps_tracks = points_to_tracks(fcd_points, **ptt_kwargs)
+    gps_tracks = points_to_tracks(points, **ptt_kwargs)
     road_links.links['length'] = road_links.links[road_link_weight]
 
     if verbose:
         print('---- init mapmatching…')
     nc = NetworkCaster_MapMaptching(gps_tracks, road_links)
     ray.shutdown()
-    import fcdmodel
-    ray.init(num_cpus=workers, runtime_env={"py_modules": [fcdmodel]})
+    import massmodel
+    ray.init(num_cpus=workers, runtime_env={"py_modules": [massmodel]})
 
     if verbose:
         print(' ---- mapmatching…')

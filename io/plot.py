@@ -189,12 +189,12 @@ def gdf_serialize(gdf, ommited_columns=[]):
     return gdf
     
 
-def interactive_plot(fcd, phone_id=None, track_id=None, track_column='first_ts', point_column='ts', m=None):
+def interactive_plot(self, phone_id=None, track_id=None, track_column='first_ts', point_column='ts', m=None):
     
     # track plot
-    tracks = fcd.tracks.loc[fcd.tracks['phone_id'] == phone_id].copy()
+    tracks = self.tracks.loc[self.tracks['phone_id'] == phone_id].copy()
     if track_id is not None:
-        tracks = fcd.tracks.loc[fcd.tracks['track_id']==track_id]
+        tracks = self.tracks.loc[self.tracks['track_id']==track_id]
     tracks = gdf_serialize(tracks, [track_column])
     m_tracks = tracks.explore(
         track_column, m=m,
@@ -202,9 +202,9 @@ def interactive_plot(fcd, phone_id=None, track_id=None, track_column='first_ts',
     )
 
     # point plot
-    points = fcd.points.loc[fcd.points['phone_id'] == phone_id].copy()
+    points = self.points.loc[self.points['phone_id'] == phone_id].copy()
     if track_id is not None:
-        points = fcd.points.loc[fcd.points['track_id']==track_id]
+        points = self.points.loc[self.points['track_id']==track_id]
     points = gpd.GeoDataFrame(points)
     points.set_crs(epsg=2154, inplace=True)
     points = gdf_serialize(points, [point_column])

@@ -1,4 +1,4 @@
-from fcdmodel.io import plot
+from massmodel.io import plot
 
 
 class PlotModel():
