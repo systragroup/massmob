@@ -6,4 +6,4 @@
 ## License
 [CeCILL-B](LICENSE.md)
 
-[alt text] illustration.png
+<img src="https://github.com/systragroup/massmob/blob/main/illustation.png" alt="drawing" width="300"/>
