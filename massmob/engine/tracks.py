@@ -1,39 +1,82 @@
 import pandas as pd
 import geopandas as gpd
+import polars as pl
+import numpy as np
+from pyproj import Transformer
+import ciso8601
 import numpy as np
 import ciso8601
+import shapely
 from shapely.geometry import LineString, Point
 from massmob.engine import stops
 
 
-def tracks_from_points_with_stops(points):
-    if 'geometry' not in points.columns:
-        points['geometry'] = points[['x', 'y']].apply(Point, 1)
+def tracks_from_points_with_stops(points: pl.DataFrame) -> pl.DataFrame:
+    """
+    Aggregates point-level tracking data to track-level summaries using Polars.
 
-    # points.drop_duplicates(subset=['phone_id', 'geometry'], keep='first', inplace=True)
+    Each unique pair of 'phone_id' and 'track_id' defines a distinct track.
+    For each track, aggregate statistics are computed:
+    - Median accuracy
+    - Median sampling duration
+    - Median sampling distance
+    - Total duration (sum)
+    - Total length (sum)
+    - List of point indices
+    - Ordered list of (x, y) coordinate tuples for downstream use (e.g., as a LineString or similar)
 
-    points['duration'] = points['t']
-    points['length'] = points['d']
-    points = points.rename(
-        columns={
-            't': 'sampling_duration_median', 'd': 'sampling_distance_median',
-            'accuracy': 'accuracy_median'
-        }
-    )
-    points['point_ids'] = points.index
+    Parameters
+    ----------
+    points : pl.DataFrame
+        A Polars DataFrame with at least the following columns:
+        ['phone_id', 'track_id', 't', 'd', 'accuracy', 'duration', 'length', 'x', 'y']
+        where:
+        - 't' is sampling duration
+        - 'd' is sampling distance
+        - 'accuracy' is accuracy measurement
+        - 'duration' and 'length' are per-point duration and distance
+        - 'x', 'y' are coordinates
 
-    points = points.groupby(['phone_id', 'track_id'], as_index=False).agg(
-        {'accuracy_median':np.median, 'sampling_duration_median':np.median, 'sampling_distance_median': np.median,
-        'duration': np.sum, 'length': np.sum, 
-        'point_ids': list, 'geometry': lambda x: LineString(list(x))
-        }
-    )
+    Returns
+    -------
+    pl.DataFrame
+        Aggregated DataFrame at track level with columns:
+        ['phone_id', 'track_id', 'accuracy_median', 'sampling_duration_median',
+         'sampling_distance_median', 'duration', 'length', 'point_ids', 'coordinates_list',
+         'average_speed']
+    """
+    # Add a unique index to identify points within the track (analogous to point_ids)
+    points = points.with_row_count("point_ids")
 
-    points['average_speed'] = points['length'] / points['duration']
+    # Rename columns for clearer semantics in downstream processing
+    points = points.rename({
+        "t": "duration",
+        "d": "length",
+        "accuracy": "accuracy_median"
+    })
 
-    tracks = gpd.GeoDataFrame(points)
+    # Group by phone_id and track_id, then aggregate relevant statistics and lists
+    tracks = points.group_by(["phone_id", "track_id"]).agg([
+        # Median accuracy per track
+        pl.col("accuracy_median").median().alias("accuracy_median"),
+        # Median sampling duration per track
+        pl.col("duration").median().alias("sampling_duration_median"),
+        # Median sampling distance per track
+        pl.col("length").median().alias("sampling_distance_median"),
+        # Total duration and length per track
+        pl.col("duration").sum().alias("duration"),
+        pl.col("length").sum().alias("length"),
+        # List of structs representing (x, y) coordinates in order
+        pl.struct(["x", "y"]).implode().alias("coordinates_list")
+    ])
+
+    # Compute average speed (length divided by duration) for each track
+    tracks = tracks.with_columns([
+        (pl.col("length") / pl.col("duration")).alias("average_speed")
+    ])
 
     return tracks
+
 
 
 def analysis_tracks(tracks, points):
@@ -59,307 +102,259 @@ def analysis_tracks(tracks, points):
     return tracks
 
 
-def build_tracked_points(points, MAX_SECONDS_DELAY_BETWEEN_POINTS =  60 * 60 ,    # délai maximum en minutes entre deux points consécutifs pouvant appartenir à une même trace
-                    STOP_SPEED_THRESHOLD_KMH = 1,
-                    IDLING_PHONE_METERS_DISTANCE = 200  ,
-                    MAKING_A_STOP_SECONDS_DELAY = 10 * 60      ,                    
-                    MIN_TRIP_DURATION_SECONDS = 60 * 2  ,                        # durée minimale en seconds d'une trace (non conservée en dessous)
-                    MIN_TRIP_DISTANCE_METERS = 200):
+def build_tracked_points(
+    points: pl.DataFrame,
+    MAX_SECONDS_DELAY_BETWEEN_POINTS: int = 60 * 60,
+    STOP_SPEED_THRESHOLD_KMH: float = 1,
+    IDLING_PHONE_METERS_DISTANCE: float = 200,
+    MAKING_A_STOP_SECONDS_DELAY: float = 10 * 60,
+    MIN_TRIP_DURATION_SECONDS: float = 60 * 2,
+    MIN_TRIP_DISTANCE_METERS: float = 200
+) -> pl.DataFrame:
     """
-    Build the tracks and allocate the id of each tracks to the points.
+    Identifie, segmente et filtre les trajets dans un DataFrame Polars de points GPS/horodatés.
 
-    :param points: dataframe of points with columns ['phone_id', 'eventDate', 'x', 'y','ts'] (ts is the timestamp in seconds)
-    :type points: pandas.DataFrame
-    :param MAX_SECONDS_DELAY_BETWEEN_POINTS: maximum delay in seconds between two consecutive points that can belong to the same trace
-    :type MAX_SECONDS_DELAY_BETWEEN_POINTS: int
-    :param STOP_SPEED_THRESHOLD_KMH: speed threshold in km/h below which a point is considered as a stop
-    :type STOP_SPEED_THRESHOLD_KMH: int
-    :param IDLING_PHONE_METERS_DISTANCE: distance in meters below which a stop is considered as a phone idling
-    :type IDLING_PHONE_METERS_DISTANCE: int
-    :param MAKING_A_STOP_SECONDS_DELAY: delay in seconds below which a stop is considered as a making a stop
-    :type MAKING_A_STOP_SECONDS_DELAY: int
-    :param MIN_TRIP_DURATION_SECONDS: minimum duration in seconds of a trace (not kept below)
-    :type MIN_TRIP_DURATION_SECONDS: int
-    :param MIN_TRIP_DISTANCE_METERS: minimum distance in meters of a trace (not kept below)
-    :type MIN_TRIP_DISTANCE_METERS: int
-    :return: dataframe of tracks with the Linestring geometry of each trace
-
+    Retourne le DataFrame filtré et segmenté, prêt à l'analyse.
     """
-    
-    points = stops.points_clean(points)
+
+    # Nettoyage amont (fournir des alternatives si stops.* fonctionne sur Polars)
+    points = stops.clean_points(points)
     points = stops.stops_append_d_s_t(points)
 
-    ## tag beginning of new trace if interval is above MAX_SECONDS_DELAY_BETWEEN_POINTS
-    points['duration_threshold_exceeded'] = False
-    points.loc[points['t'] > MAX_SECONDS_DELAY_BETWEEN_POINTS, 'duration_threshold_exceeded'] = True
+    # Marquages et coupures de points
+    points = points.with_columns([
+        (pl.col('t') > MAX_SECONDS_DELAY_BETWEEN_POINTS).alias('duration_threshold_exceeded')
+    ])
+    points = points.with_columns([
+        pl.when(pl.col('duration_threshold_exceeded')).then(0).otherwise(pl.col('d')).alias('d'),
+        pl.when(pl.col('duration_threshold_exceeded')).then(0).otherwise(pl.col('t')).alias('t'),
+        pl.when(pl.col('duration_threshold_exceeded')).then(0).otherwise(pl.col('s')).alias('s')
+    ])
+    points = points.with_columns([
+        (pl.col('duration_threshold_exceeded') | pl.col('new_phone')).alias('cut')
+    ]).drop(['duration_threshold_exceeded', 'new_phone'])
 
-    # set d, t, s value of each first point of a new sequence to 0
-    points.loc[points['duration_threshold_exceeded'], ['d', 't', 's']] = 0
+    # Low speed
+    points = points.with_columns([
+        (pl.col('s') < STOP_SPEED_THRESHOLD_KMH).alias('low_speed')
+    ])
+    # Compteur cumulatif sur coupe/arrêt => trip_group
+    points = points.with_columns([
+        ((pl.col('cut') | pl.col('low_speed')).cast(pl.Int32).cum_sum()).alias('trip_group')
+    ])
 
-    points['cut'] = points['duration_threshold_exceeded'] | points['new_phone']
-    points = points.drop(['duration_threshold_exceeded', 'new_phone'], axis=1)
-
-    points['low_speed'] = False
-    low_speed_loc = points['s'] < STOP_SPEED_THRESHOLD_KMH
-    points.loc[low_speed_loc, 'low_speed'] = True
-    points['trip_group'] = (points['cut'] | points['low_speed']).cumsum()
-
+    # Mark "noise_trip"
     points = stops.stops_identify_noise_trips(points, IDLING_PHONE_METERS_DISTANCE)
+    points = points.with_columns([
+        (pl.col('low_speed') | pl.col('noise_trip')).alias('stop')
+    ])
 
-    points['stop'] = points['low_speed'] | points['noise_trip']
-    points['short_stop'] = False
-    points['stop_group'] = (~points['stop']).cumsum()
-    stop_durations = points.groupby('stop_group')['ts'].max() - points.groupby('stop_group')['ts'].min()
-    short_stop = stop_durations < MAKING_A_STOP_SECONDS_DELAY
-    points.loc[points['stop_group'].isin(short_stop[short_stop].index), 'short_stop'] = True
+    # Stop group
+    points = points.with_columns([
+        # ((~pl.col('stop')).cast(pl.Int32).cum_sum().over("phone_id")).alias('stop_group')
+        ((~pl.col('stop')).cast(pl.Int32).cum_sum()).alias('stop_group')
+    ])
 
-    points.loc[points['short_stop'], 'stop'] = False
-    points = points.drop(['low_speed', 'trip_group', 'noise_trip', 'short_stop', 'stop_group'], axis=1)
+    stop_durations = (
+        points.group_by('stop_group').agg(
+            (pl.col('ts').max() - pl.col('ts').min()).alias('duration')
+        )
+    )
+    short_stop_groups = stop_durations.filter(
+        pl.col('duration') < MAKING_A_STOP_SECONDS_DELAY
+    )['stop_group']
 
-    def _set_trace_id(df, stop_column, cut_column, sort_by=['phone_id', 'ts']):
-        """
-        add column with trace identifier from stop and cut columns
-        # stop_column - 1:1, 2:0, 3:0, 4:1, 5:1, 6:0, 7:1, 8:0                       # initial stop_column
-        # stop_column - 1:0, 1:1, 2:0, 3:0, 4:0, 4:1, 5:0, 5:1, 6:0, 7:0, 7:1, 8:0   # after adding duplicates
-        # trace -         0,   1    1    1    1    2    2    3    3    3    4    4   # trace identifier
-        """
-        # we duplicate stops that are potential start and end of tracks
-        dup = df.loc[df[stop_column]].copy()
-        dup[stop_column] = False
-        df = pd.concat([df, dup]).sort_values(by=sort_by + [stop_column])
-        # cumsum to tag each trace, taking into account both stop and cut columns
-        df['track_id'] = (df[stop_column] | df[cut_column]).cumsum()
+    points = points.with_columns([
+        pl.col('stop_group').is_in(short_stop_groups).alias('short_stop'),
+        pl.when(pl.col('stop_group').is_in(short_stop_groups))
+          .then(False).otherwise(pl.col('stop')).alias('stop')
+    ]).drop(['low_speed', 'trip_group', 'noise_trip', 'short_stop', 'stop_group'])
 
+    # Segmentation finale
+    def set_trace_id(df: pl.DataFrame, stop_column: str, cut_column: str, sort_by=['phone_id', 'ts']) -> pl.DataFrame:
+        df = df.with_columns([pl.lit(False).alias('fake_points')])
+        dup = df.filter(pl.col(stop_column)).with_columns([
+            pl.lit(True).alias('fake_points'),
+            pl.lit(False).alias(stop_column)
+        ])
+        df = pl.concat([df, dup])
+        sort_cols = sort_by + [stop_column]
+        df = df.sort(sort_cols)
+        df = df.with_columns([
+            ((pl.col(stop_column).cast(pl.Int32) | pl.col(cut_column).cast(pl.Int32))
+              .cum_sum()
+              .alias('track_id')
+            )
+        ])
         return df
-    points = _set_trace_id(points, 'stop', 'cut', sort_by=['phone_id', 'ts'])
-    
-    points = points.loc[points['track_id'].isin((points.groupby('track_id')['ts'].count() > 1).index)]
-    keep_t = points.groupby('track_id')['t'].sum() > MIN_TRIP_DURATION_SECONDS
 
-    keep_d_x = (points.groupby('track_id')['x'].max() - points.groupby('track_id')['x'].min()) > MIN_TRIP_DISTANCE_METERS
-    keep_d_y = (points.groupby('track_id')['y'].max() - points.groupby('track_id')['y'].min()) > MIN_TRIP_DISTANCE_METERS
-    keep_d = keep_d_x | keep_d_y
+    points = set_trace_id(points, 'stop', 'cut', sort_by=['phone_id', 'ts'])
 
-    keep = keep_d & keep_t
-    points = points.loc[points['track_id'].isin(keep[keep].index)]
-    points['eventDate8601'] = points['eventDate'].apply(lambda x:  ciso8601.parse_datetime(str(x).split(' UTC')[0].replace(' ', 'T')))
-    points['day'] = points['eventDate8601'].apply(lambda x: f"{x.year}-{x.month}-{x.day}")
+    # On retire les trajets trop courts
+    trip_stats = (
+        points.group_by("track_id")
+        .agg([
+            pl.count().alias("n_pts"),
+            (pl.col("ts").max() - pl.col("ts").min()).alias("duration"),
+            pl.col("t").sum().alias("trip_t"),
+            (pl.col("x").max() - pl.col("x").min()).alias("span_x"),
+            (pl.col("y").max() - pl.col("y").min()).alias("span_y"),
+        ])
+    )
+    valid_tracks = trip_stats.filter(
+        (pl.col("n_pts") > 1)
+        & ((pl.col("span_x") > MIN_TRIP_DISTANCE_METERS) | (pl.col("span_y") > MIN_TRIP_DISTANCE_METERS))
+        & (pl.col("trip_t") > MIN_TRIP_DURATION_SECONDS)
+    )["track_id"]
+    points = points.filter(pl.col("track_id").is_in(valid_tracks))
 
-    tracks = points.copy()
-    # remove type category
-    tracks['phone_id'] = tracks['phone_id'].astype(str)
-    # tracks = tracks.drop('phone_id', axis=1)
-    
-    return tracks
+    # TODO: on est ici en UTC -> changer en local
+    # Parsing du jour
+    points = points.with_columns([
+        (
+            pl.col("eventDate").dt.year().cast(pl.Utf8) + "-" +
+            pl.col("eventDate").dt.month().cast(pl.Utf8).str.zfill(2) + "-" +
+            pl.col("eventDate").dt.day().cast(pl.Utf8).str.zfill(2)
+        ).alias("day")
+    ])
+    points = points.with_columns([pl.col("phone_id").cast(pl.Utf8)])
+    return points
 
-def filtering(pts, phone_id_column='phone_id', INACTIVE_PHONE_AREA_SIDE_METERS = 50, MAX_ACCURACY=50):
-    
-    """Filtre les points pour ne garder que ceux qui sont suffisamment éloignés les uns des autres
-    
-    :param pts: dataframe of points with columns [phone_id_column, 'eventDate', 'longitude', 'latitude']
-    :type pts: pandas.DataFrame
-    :param INACTIVE_PHONE_AREA_SIDE_METERS: distance in meters below which a phone is considered as inactive
-    :type INACTIVE_PHONE_AREA_SIDE_METERS: int
-    :return: dataframe of points with columns [phone_id_column, 'eventDate', 'longitude', 'latitude','ts']
+
+def filtering(
+    pts: pl.DataFrame,
+    phone_id_column='phone_id',
+    INACTIVE_PHONE_AREA_SIDE_METERS = 50,
+    MAX_ACCURACY = 50
+):
     """
-    df = pts.drop(['speed', 'eventId', 'Unnamed: 0'], axis=1, errors='ignore')
-    df[phone_id_column] = df[phone_id_column].astype("category")
-    del pts
-    temp = gpd.GeoSeries([LineString(df[['longitude', 'latitude' ]].values)]).set_crs(epsg=4326) 
-    temp = temp.to_crs(epsg=2154)
-    df[['x', 'y']] = temp.geometry[0].coords[:]
+    Filter points to keep only those that are sufficiently far from each other (phones not considered inactive).
+    """
+    # Drop useless columns if present
+    cols_to_drop = [col for col in ['speed', 'eventId', 'Unnamed: 0'] if col in pts.columns]
+    pts = pts.drop(cols_to_drop)
 
-    # optimize memory usage: convert to integer and drop unused columns
-    del temp
-    df[['x', 'y']] = df[['x', 'y']].astype(int)
+    # Prepare transformer for lon/lat --> x/y in Lambert-93 (EPSG:2154)
+    transformer = Transformer.from_crs("epsg:4326", "epsg:2154", always_xy=True)
+    # Vectorized conversion
+    x, y = transformer.transform(pts["longitude"].to_numpy(), pts["latitude"].to_numpy())
+    pts = pts.with_columns([
+        pl.Series("x", np.array(x).astype(int)),
+        pl.Series("y", np.array(y).astype(int))
+    ])
+
+    ## Identify active phones (moving enough)
+    pts_bbox = (
+        pts.group_by(phone_id_column)
+        .agg([
+            pl.col("x").min().alias("x_min"),
+            pl.col("x").max().alias("x_max"),
+            pl.col("y").min().alias("y_min"),
+            pl.col("y").max().alias("y_max"),
+        ])
+        .with_columns(
+            (
+                ((pl.col("x_max") - pl.col("x_min")) ** 2 + (pl.col("y_max") - pl.col("y_min")) ** 2).sqrt()
+            ).alias("max_dist")
+        )
+    )
+    pts_active = (
+        pts.join(pts_bbox.select([phone_id_column, 'max_dist']), on=phone_id_column)
+        .filter(pl.col("max_dist") > INACTIVE_PHONE_AREA_SIDE_METERS)
+        .select(pts.columns)  # revient à la structure initiale
+    )
+
+    # Format eventDate to ISO8601 and compute timestamps
+    pts_active = pts_active.with_columns([
+        pl.col("eventDate").cast(pl.Utf8).str.replace(" UTC", "").str.replace(" ", "T").alias("eventDate8601")
+    ])
+    timestamps = [
+        int(ciso8601.parse_datetime(dt).timestamp()) if dt else None
+        for dt in pts_active["eventDate8601"]
+    ]
+    pts_active = pts_active.with_columns([pl.Series("ts", timestamps)])
+
+    # Filter on accuracy
+    pts_active = pts_active.with_columns([
+        pl.col("accuracy").cast(pl.Int64)
+    ]).filter(pl.col("accuracy") < MAX_ACCURACY)
+
+    # Drop the temp eventDate8601
+    pts_active = pts_active.drop("eventDate8601")
+
+    return pts_active
+
+
+def points_to_tracks(points: pl.DataFrame) -> pl.DataFrame:
+    # Remove duplicated points per phone_id and (x, y)
+    df = points.unique(subset=["phone_id", "x", "y"])
     
-    active_phones = df.groupby(phone_id_column).apply(_is_phone_moving_enough, INACTIVE_PHONE_AREA_SIDE_METERS)
-
-    df_active = df[df[phone_id_column].isin(active_phones[active_phones].index)].copy()
-
-    df_active['eventDate8601'] = df_active['eventDate'].apply(lambda x: str(x).split(' UTC')[0].replace(' ', 'T'))
-    df_active['ts'] = df_active['eventDate8601'].apply(lambda x: ciso8601.parse_datetime(x).timestamp())
-    df_active['ts'] = df_active['ts'].astype(int)
-    df_active['accuracy'] = df_active['accuracy'].astype(int)
-    df_active.drop(['eventDate8601'], axis=1, inplace=True)
-    
-    df_active = df_active[df_active.accuracy < MAX_ACCURACY]
-
-    return df_active
-
-def _is_phone_moving_enough(df_temp, INACTIVE_PHONE_AREA_SIDE_METERS):
-        """
-        Retourne "True" si tous les points (d'un téléphone donné = d'un phone_id donné)
-        ne sont pas contenus dans un carré de INACTIVE_PHONE_AREA_SIDE_METERS mètres de côté.
-        Autrement dit, détermine si un téléphone a donné des points qui valent le coup d'être calculés en tracks,
-        et ne sont pas seulement tous des points quasi-immobiles dans une petite zone. 
-        :param df_temp: dataframe of points with columns ['phone_id', 'eventDate', 'longitude', 'latitude']
-        :type df_temp: pandas.DataFrame
-        :param INACTIVE_PHONE_AREA_SIDE_METERS: distance in meters below which a phone is considered as inactive
-        :type INACTIVE_PHONE_AREA_SIDE_METERS: int
-        :return: True if the phone is moving enough, False otherwise
-        """
-        x_d = df_temp['x'].max() - df_temp['x'].min()
-        y_d = df_temp['y'].max() - df_temp['y'].min()
-        d = max(x_d, y_d)
-        return(d > INACTIVE_PHONE_AREA_SIDE_METERS)
-
-
-#### OLD VERSION BELOW ? ####
-
-# def _v_instant(row):
-#     """
-#     Calcule la vitesse instantanée en km/h
-#     :param row: ligne du dataframe
-#     :type row: pandas.Series
-#     :return: vitesse instantanée en km/h
-#     """
-#     if row['time_elapsed'] ==0:
-#         return 0
-#     else:
-#         return(row['dist_from_prec'] / row['time_elapsed'] * 3.6)
-    
-
-def _acc_instant(row):
-    if row['time_elapsed'] ==0:
-        return 0
-    else:
-        return(row['delta_v_from_prec'] / row['time_elapsed']/3.6)
-
-
-# def _calc_time_elapsed(row):
-#     """
-#     Calcule le temps écoulé entre le point courant et le point précédent
-#     :param row: ligne du dataframe
-#     :type row: pandas.Series
-#     :return: temps écoulé entre le point courant et le point précédent
-
-#     """
-#     try:
-#         if row['track_id'] != row['trace_id_prec']:
-#             time_elapsed = 0
-#             return time_elapsed
-#         else:
-#             time_elapsed = (row['eventDate8601'] - row['time_prec']).total_seconds()
-#             if time_elapsed < 0:
-#                 time_elapsed = 0
-#             return time_elapsed
-#     except:
-#         time_elapsed = 0
-#         return time_elapsed
-
-# def _calc_dist_from_prec(row):
-#     """
-#     Calcul de la distance entre le point courant et le point précédent
-#     :param row: ligne du dataframe
-#     :type row: pandas.Series
-#     :return: distance entre le point courant et le point précédent
-
-#     """
-#     try:
-#         if row['track_id'] != row['trace_id_prec']:
-#             dist = 0
-#             return dist
-#         else:
-#             dist = row['geometry'].distance(row['loc_prec'])
-#             if dist < 0:
-#                 dist = 0
-#             return dist
-#     except:
-#         dist = 0
-#         return dist
-    
-# def _calc_delta_v_from_prec(row):
-#     """
-#     Calcul de la distance entre le point courant et le point précédent
-#     :param row: ligne du dataframe
-#     :type row: pandas.Series
-#     :return: distance entre le point courant et le point précédent
-
-#     """
-#     try:
-#         if row['track_id'] != row['trace_id_prec']:
-#             delta_v = 0
-#             return delta_v
-#         else:
-#             deta_v = row['v_instant'] - row['v_instant_prec']
-#             if deta_v < 0:
-#                 deta_v = 0
-#             return deta_v
-#     except:
-#         dist = 0
-#         return dist
-
-
-def series_point_to_linestring(series):
-    liste = list(series)
-    if len(liste)>1:
-        linestring = shapely.geometry.LineString(liste)
-        return linestring
-
-
-def _to_list(series):
-    liste = list(series)
-    return liste
-
-
-def _to_list_cumul(series):
-    #renvoie la liste en cumulant les valeur
-    liste = list(series)
-    liste_cumul = []
-    for i in range(len(liste)):
-        liste_cumul.append(sum(liste[:i+1]))
-    return liste_cumul
-
-
-def points_to_tracks(points):
-    # """
-    # Convertit un dataframe de points en un dataframe de tracks.
-    # :param points: dataframe of points with columns ['phone_id', 'eventDate', 'x', 'y','ts']
-    # :type points: pandas.DataFrame
-    # :return: dataframe of tracks with the Linestring geometry of each trace
-
-    # """
+    # Shift x, y, and timestamp within each track_id to get previous point/instant
+    df = df.with_columns([
+        pl.col("x").shift(1).over("track_id").alias("x_prec"),
+        pl.col("y").shift(1).over("track_id").alias("y_prec"),
+        pl.col("ts").shift(1).over("track_id").alias("ts_prec"),
+    ])
    
-    points = gpd.GeoDataFrame(points, geometry=gpd.points_from_xy(points.x, points.y), crs ='epsg:2154')
-    points.drop_duplicates(subset=['phone_id', 'geometry'], keep='first', inplace=True)
-    points['time_prec']= points['eventDate8601'].shift(1)
-    points['trace_id_prec']= points['track_id'].shift(1)
-    points['loc_prec']= points['geometry'].shift(1)
-    points['time_elapsed'] = points.apply(_calc_time_elapsed, axis=1)
-    points['dist_from_prec'] = points.apply(_calc_dist_from_prec, axis=1)
-    points.dropna(inplace=True)
-    points['v_instant'] = points.apply(_v_instant, axis=1)
-    points['accuracy_max'] = points['accuracy']
-    points['accuracy_moy'] = points['accuracy']
-    points['time_prec_moy'] = points['time_elapsed']
-    points['time_prec_max'] = points['time_elapsed']
-    points['list_time_cumul'] = points['time_elapsed']
-    points['list_v_instant'] = points['v_instant']
-    points['list_time_elapsed'] = points['time_elapsed']
-    points['first_ts'] = points['eventDate8601']
-    points['last_ts'] = points['eventDate8601']
-    points['dist_from_prec_max'] = points['dist_from_prec']
-    points['dist_from_prec_moy'] = points['dist_from_prec']
-    points['v_instant_max'] = points['v_instant']
-    points['v_instant_moy'] = points['v_instant']
-    points['v_median']= points['v_instant']
-    points['v_95th_percentile']= points['v_instant']
-    points['departure_point'] = points['geometry']
-    points['arrival_point'] = points['geometry']
-    points['linestring'] = points['geometry']
-    points['duration'] = points['time_elapsed']
-    points['track_length'] = points['dist_from_prec']
-    points['day'] = points['eventDate8601'].apply(lambda x: f"{x.year}-{x.month}-{x.day}")
-    #Calcul des champs utiles par id tracks
+    # Compute euclidean distance from the previous point (fast, no geometry object)
+    df = df.with_columns([
+        pl.when(pl.col("x_prec").is_not_null())
+         .then(
+             ((pl.col("x") - pl.col("x_prec"))**2 + (pl.col("y") - pl.col("y_prec"))**2).sqrt()
+         )
+         .otherwise(0)
+         .alias("dist_from_prec")
+    ])
+   
+    # Compute elapsed time between two consecutive GPS points (in seconds)
+    df = df.with_columns([
+        (pl.col("ts") - pl.col("ts_prec")).alias("time_elapsed"),
+    ])
+   
+    # Compute instant speed (meters per second)
+    df = df.with_columns([
+        pl.when(pl.col("time_elapsed") > 0)
+         .then(pl.col("dist_from_prec") / pl.col("time_elapsed"))
+         .otherwise(0)
+         .alias("v_instant")
+    ])
+   
+    # Aggregate all desired statistics by trip (track_id)
+    tracks = df.group_by("track_id").agg(
+        pl.col("accuracy").max().alias("accuracy_max"),
+        pl.col("accuracy").mean().alias("accuracy_moy"),
+        pl.col("time_elapsed").mean().alias("time_prec_moy"),
+        pl.col("time_elapsed").max().alias("time_prec_max"),
+        pl.concat_list("v_instant").alias("list_v_instant"),
+        pl.concat_list("time_elapsed").alias("list_time_elapsed"),
+        pl.col("v_instant").median().alias("v_median"),
+        pl.col("v_instant").quantile(0.95, interpolation='nearest').alias("v_95th_percentile"),
+        pl.col("dist_from_prec").max().alias("dist_from_prec_max"),
+        pl.col("dist_from_prec").mean().alias("dist_from_prec_moy"),
+        pl.col("v_instant").max().alias("v_instant_max"),
+        pl.col("v_instant").mean().alias("v_instant_moy"),
+        pl.col("x").first().alias("departure_x"),
+        pl.col("y").first().alias("departure_y"),
+        pl.col("x").last().alias("arrival_x"),
+        pl.col("y").last().alias("arrival_y"),
+        pl.concat_list("x").alias("x_list"),
+        pl.concat_list("y").alias("y_list"),
+        pl.col("ts").first().alias("first_ts"),
+        pl.col("ts").last().alias("last_ts"),
+        pl.col("time_elapsed").sum().alias("duration"),
+        pl.col("dist_from_prec").sum().alias("track_length"),
+        pl.col("eventDate").dt.day().first().alias("day"),
+        pl.col("phone_id").first().alias("phone_id"),
+    )
 
-    points = points.groupby('track_id').agg({'accuracy_max':np.max,'accuracy_moy':np.mean,'time_prec_moy':np.mean,'time_prec_max':np.max,'list_v_instant':_to_list,'list_time_elapsed':_to_list,'v_median':np.median,'v_95th_percentile':lambda x: np.percentile(x,95),'dist_from_prec_max':np.max,'dist_from_prec_moy':np.mean,'v_instant_max':np.max,'v_instant_moy':np.mean,'departure_point':'first','arrival_point':'last','first_ts':'first','last_ts':'last','linestring':series_point_to_linestring,'duration':np.sum,'track_length':np.sum, 'day':'first','phone_id':'first'})
-    points.reset_index(inplace=True)
-    points['dist_departure_arrival'] = points.apply(lambda x: x['departure_point'].distance(x['arrival_point']), axis=1)
- 
-    tracks_linestring_processed = gpd.GeoDataFrame(points, geometry='linestring', crs='EPSG:2154') #Conversion GDF
-    tracks_linestring_processed = pd.DataFrame(tracks_linestring_processed)
-    tracks_linestring_processed.rename(columns={'linestring':'geometry'}, inplace=True)
-    tracks_linestring_processed = gpd.GeoDataFrame(tracks_linestring_processed, geometry='geometry', crs='EPSG:2154') #Conversion GDF
-    # tracks_linestring_processed['dist_departure_arrival'] = linestring_processed.apply(lambda x: x['departure_point'].distance(x['arrival_point']), axis=1)
-    return tracks_linestring_processed
+    # Compute direct-euclidean distance between first and last point of each track
+    tracks = tracks.with_columns([
+        pl.struct(["departure_x", "departure_y", "arrival_x", "arrival_y"])
+          .map_elements(
+              lambda d: np.hypot(d["arrival_x"]-d["departure_x"], d["arrival_y"]-d["departure_y"]),
+              return_dtype=pl.Float64
+          )
+          .alias("dist_departure_arrival")
+    ])
+
+    return tracks

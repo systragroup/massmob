@@ -1,4 +1,5 @@
 import pandas as pd
+import polars as pl
 import os
 import copy 
 import pickle
@@ -10,27 +11,31 @@ from massmob.model import model, plotmodel
 from massmob.io import io
 
 
-def read_zippedpickles(folder, omitted_attributes=(), only_attributes=None):
-    files = os.listdir(folder)
-    keys = [
-        file.split('.zippedpickle')[0]
-        for file in files
-        if '.zippedpickle' in file
+def read_parquets(folder, omitted_attributes=(), only_attributes=None):
+    files = [
+        f for f in os.listdir(folder)
+        if f.endswith('.parquet')
     ]
+    keys = [f.split('.parquet')[0] for f in files]
+
+    # init model
     self = MassModel()
+
     iterator = tqdm(keys)
     for key in iterator:
         if key in omitted_attributes:
             continue
         if only_attributes is not None and key not in only_attributes:
             continue
-
         iterator.desc = key
-        with open('%s/%s.zippedpickle' % (folder, key), 'rb') as file:
-            buffer = file.read()
-            bigbuffer = zlib.decompress(buffer)
-            self.__setattr__(key, pickle.loads(bigbuffer))
+        fpath = os.path.join(folder, f"{key}.parquet")
+        self.__setattr__(key, pl.read_parquet(fpath))
     return self
+
+def from_singlespot_zip(zip_path, **kwargs):
+    pts = io.singlespot_zip_to_points(zip_path, **kwargs)
+    pts = pts.rename({'sptId':'phone_id'})
+    return MassModel(pts)
 
 
 class MassModel(
@@ -38,7 +43,7 @@ class MassModel(
         plotmodel.PlotModel
         ):
 
-    def __init__(self, points=None, MAX_ACCURACY=100):
+    def __init__(self, points=None, MAX_ACCURACY=50):
         """
         points : DataFrame with columns ['phone_id','latitude','logitude','eventDate','accuracy']
         Initialise l'objet MassModel avec les points bruts
@@ -46,9 +51,7 @@ class MassModel(
         self.points = points
     
         if points is not None and len(points):
-            if 'sptId' in points.columns:
-                points.rename(columns={'sptId':'phone_id'}, inplace=True)
-            self.phones = pd.DataFrame(points['phone_id'].unique()).rename(columns={0:'phone_id'})
+            self.phones = pl.DataFrame({"phone_id": points['phone_id'].unique()})
     
     def describe(self):
         results = {
@@ -59,18 +62,30 @@ class MassModel(
             results.update({'Tracks': f'{len(self.tracks):,}'})
         return pd.Series(results)
 
-    def to_zippedpickles(
+    def to_parquets(
         self,
         folder,
         omitted_attributes=(),
         only_attributes=None,
         max_workers=1,
-        complevel=-1,
         remove_first=True
     ):
         if remove_first:
             shutil.rmtree(folder, ignore_errors=True)
         os.makedirs(folder, exist_ok=True)
+
+        def export_parquet(key, value):
+            fpath = os.path.join(folder, f"{key}.parquet")
+            # Pandas DataFrame
+            if hasattr(value, "to_parquet"):
+                value.to_parquet(fpath, index=False)
+            # Polars DataFrame
+            elif "polars" in str(type(value)).lower():
+                value.write_parquet(fpath)
+            # Autre type : sauvegarde non implémentée
+            else:
+                print(f"Export failed {key} (type: {type(value)})")
+
         if max_workers == 1:
             iterator = tqdm(self.__dict__.items())
             for key, value in iterator:
@@ -79,10 +94,7 @@ class MassModel(
                     continue
                 if only_attributes is not None and key not in only_attributes:
                     continue
-                io.to_zippedpickle(
-                    value, '%s/%s.zippedpickle' % (folder, key),
-                    complevel=complevel
-                )
+                export_parquet(key, value)
         else:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 for key, value in self.__dict__.items():
@@ -90,14 +102,8 @@ class MassModel(
                         continue
                     if only_attributes is not None and key not in only_attributes:
                         continue
-                    executor.submit(
-                        io.to_zippedpickle,
-                        value,
-                        r'%s/%s.zippedpickle' % (folder, key),
-                        complevel=complevel
+                    executor.submit(export_parquet, key, value)
 
-    
-                    )
 
     def copy(self):
         return copy.deepcopy(self)

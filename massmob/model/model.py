@@ -13,6 +13,29 @@ from massmob.engine import mode, tracks, stops, analysis, mapmatching, clusterin
 
 class Model():
 
+    def filter_points(self, **kwargs):
+        """
+        Filter points to retain only those associated with active phones, based on spatial accuracy and dispersion.
+
+        This function applies a two-stage filter:
+        1. Discards points whose spatial accuracy ("accuracy" column) exceeds the `MAX_ACCURACY` parameter threshold.
+        2. For each group of points sharing the same phone identifier (`phone_id_column`), computes the maximum distance between any two points in the group.
+            Groups for which this maximum distance is less than or equal to `INACTIVE_PHONE_AREA_SIDE_METERS` parameter
+                are considered "inactive," and all their points are removed from the dataset.
+
+        Parameters
+        ----------
+        pts : pl.DataFrame
+            Polars DataFrame containing the points to filter. Must include columns: `phone_id_column`, 'x', 'y' (coordinates), and 'accuracy'.
+        phone_id_column : str, optional
+            Name of the column identifying each phone (default is 'phone_id').
+        INACTIVE_PHONE_AREA_SIDE_METERS : float, optional
+            Maximum spatial spread (in meters) below which a phone is considered inactive.
+        MAX_ACCURACY : float, optional
+            Maximum allowed value for the 'accuracy' column.
+        """
+        self.points = tracks.filtering(self.points, **kwargs)
+
     def build_tracks(self, **kwargs):
         """
         Construit les traces à partir des points filtrés, en mettant à jour les points avec les identifiants de traces,
@@ -30,7 +53,26 @@ class Model():
         assert 'ts' in self.points.columns, 'Points are not pre-filtered, use methode .filtering() first'
                         
         self.points = tracks.build_tracked_points(self.points, **kwargs)
-        self.tracks = tracks.points_to_tracks(self.points)
+        self.tracks = tracks.tracks_from_points_with_stops(self.points)
+
+    def build_tracks_pd(self, **kwargs):
+        """
+        Construit les traces à partir des points filtrés, en mettant à jour les points avec les identifiants de traces,
+        et en construisant l'objest "traces" qui contient les traces sous forme de Linetring.
+        kwargs:
+            MAX_SECONDS_DELAY_BETWEEN_POINTS =  60 * 60 , # délai maximum en minutes entre deux points consécutifs pouvant appartenir à une même trace
+            STOP_SPEED_THRESHOLD_KMH = 1,
+            IDLING_PHONE_METERS_DISTANCE = 200,
+            MAKING_A_STOP_SECONDS_DELAY = 10 * 60,                    
+            MIN_TRIP_DURATION_SECONDS = 60 * 2,   # durée minimale en seconds d'une trace (non conservée en dessous)
+            MIN_TRIP_DISTANCE_METERS = 200
+        
+        >Nécessite d'utiliser .filtering() avant.
+        """
+        assert 'ts' in self.points.columns, 'Points are not pre-filtered, use methode .filtering() first'
+                        
+        self.points = tracks.build_tracked_points_pd(self.points, **kwargs)
+        self.tracks = tracks.points_to_tracks_pd(self.points)
     
     def analysis_points(self):
         """
