@@ -7,9 +7,8 @@ from tqdm import tqdm
 import shutil
 import zlib
 from concurrent.futures import ProcessPoolExecutor
-from massmob.model import model, plotmodel, integritymodel
+from massmob.model import model, plotmodel, integritymodel, chunkmodel
 from massmob.io import io
-
 
 def read_parquets(folder, omitted_attributes=(), only_attributes=None):
     files = [
@@ -41,21 +40,42 @@ def from_singlespot_zip(zip_path, **kwargs):
 class MassModel(
         model.Model,
         plotmodel.PlotModel,
-        integritymodel.IntegrityModel
+        integritymodel.IntegrityModel,
+        chunkmodel.ChunkModel
         ):
+    
+    def __init__(self, points=None, nchunks=1, **kwargs):
+        self.nchunks = nchunks
+        model.Model.__init__(self, points=points, **kwargs)
+        chunkmodel.ChunkModel.__init__(self, points=points, nchunks=nchunks, **kwargs)
 
-    def __init__(self, points=None):
+    def filter_points(self, **kwargs):
         """
-        points : DataFrame with columns ['phone_id','latitude','logitude','eventDate','accuracy']
-        Initialise l'objet MassModel avec les points bruts
+        Dispatches to Model or ChunkModel depending on the chunk structure.
         """
-        self.points = points
-        if points is not None and "point_id" not in points.columns:
-            self.points = self.points.with_row_index(name="point_id")
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.filter_points(self, **kwargs)
+        else:
+            return model.Model.filter_points(self, **kwargs)
     
-        if points is not None and len(points):
-            self.phones = pl.DataFrame({"phone_id": points['phone_id'].unique()})
+    def build_tracks(self, **kwargs):
+        """
+        Dispatches to Model or ChunkModel depending on the chunk structure.
+        """
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.build_tracks(self, **kwargs)
+        else:
+            return model.Model.build_tracks(self, **kwargs)
     
+    def analysis_tracks(self):
+        """
+        Dispatches to Model or ChunkModel depending on the chunk structure.
+        """
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.analysis_tracks(self)
+        else:
+            return model.Model.analysis_tracks(self)
+        
     def describe(self):
         results = {
             'Points': f'{len(self.points):,}',

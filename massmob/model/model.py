@@ -1,4 +1,5 @@
 import pandas as pd
+import polars as pl
 import numpy as np
 import os
 import copy 
@@ -12,6 +13,9 @@ from massmob.engine import mode, tracks, stops, analysis, mapmatching, clusterin
 
 
 class Model():
+
+    def __init__(self, points: pl.DataFrame = None):
+        self.points = points if points is not None else pl.DataFrame([])
 
     def filter_points(self, **kwargs):
         """
@@ -54,34 +58,6 @@ class Model():
                         
         self.points = tracks.build_tracked_points(self.points, **kwargs)
         self.tracks = tracks.tracks_from_points_with_stops(self.points)
-
-    def build_tracks_pd(self, **kwargs):
-        """
-        Construit les traces à partir des points filtrés, en mettant à jour les points avec les identifiants de traces,
-        et en construisant l'objest "traces" qui contient les traces sous forme de Linetring.
-        kwargs:
-            MAX_SECONDS_DELAY_BETWEEN_POINTS =  60 * 60 , # délai maximum en minutes entre deux points consécutifs pouvant appartenir à une même trace
-            STOP_SPEED_THRESHOLD_KMH = 1,
-            IDLING_PHONE_METERS_DISTANCE = 200,
-            MAKING_A_STOP_SECONDS_DELAY = 10 * 60,                    
-            MIN_TRIP_DURATION_SECONDS = 60 * 2,   # durée minimale en seconds d'une trace (non conservée en dessous)
-            MIN_TRIP_DISTANCE_METERS = 200
-        
-        >Nécessite d'utiliser .filtering() avant.
-        """
-        assert 'ts' in self.points.columns, 'Points are not pre-filtered, use methode .filtering() first'
-                        
-        self.points = tracks.build_tracked_points_pd(self.points, **kwargs)
-        self.tracks = tracks.points_to_tracks_pd(self.points)
-    
-    def analysis_points(self):
-        """
-        Renvoie des indicateurs et des graphs décrivant le jeu de données de points filtrés. 
-        
-        >Nécessite d'utiliser .filtering() avant.
-        """
-        assert 'ts' in self.points.columns, 'Points are not pre-filtered, use methode .filtering() first'
-        analysis.analysis_points(self.points)
     
     def analysis_tracks(self):
         """
@@ -126,6 +102,15 @@ class Model():
         """
         assert self.tracks is not None, 'Tracks are not built, build them first'
         tracks.analysis_tracks(self.tracks, self.points)
+
+    def analysis_points(self):
+        """
+        Renvoie des indicateurs et des graphs décrivant le jeu de données de points filtrés. 
+        
+        >Nécessite d'utiliser .filtering() avant.
+        """
+        assert 'ts' in self.points.columns, 'Points are not pre-filtered, use methode .filtering() first'
+        analysis.analysis_points(self.points)
     
     def mapmatching(self, **kwargs):
         """
