@@ -7,7 +7,7 @@ from tqdm import tqdm
 import shutil
 import zlib
 from concurrent.futures import ProcessPoolExecutor
-from massmob.model import model, plotmodel
+from massmob.model import model, plotmodel, integritymodel
 from massmob.io import io
 
 
@@ -40,15 +40,18 @@ def from_singlespot_zip(zip_path, **kwargs):
 
 class MassModel(
         model.Model,
-        plotmodel.PlotModel
+        plotmodel.PlotModel,
+        integritymodel.IntegrityModel
         ):
 
-    def __init__(self, points=None, MAX_ACCURACY=50):
+    def __init__(self, points=None):
         """
         points : DataFrame with columns ['phone_id','latitude','logitude','eventDate','accuracy']
         Initialise l'objet MassModel avec les points bruts
         """
         self.points = points
+        if points is not None and "point_id" not in points.columns:
+            self.points = self.points.with_row_index(name="point_id")
     
         if points is not None and len(points):
             self.phones = pl.DataFrame({"phone_id": points['phone_id'].unique()})

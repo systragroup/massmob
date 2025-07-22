@@ -64,7 +64,7 @@ def singlespot_zip_to_points(
         pl.col("countryIso").cast(pl.Categorical)
         # Add more type casts as desired
     ])
-    return pts
+    return pts.with_row_index("point_id")
 
 
 def singlespot_zip_to_parquet(

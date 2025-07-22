@@ -67,7 +67,8 @@ def tracks_from_points_with_stops(points: pl.DataFrame) -> pl.DataFrame:
         pl.col("duration").sum().alias("duration"),
         pl.col("length").sum().alias("length"),
         # List of structs representing (x, y) coordinates in order
-        pl.struct(["x", "y"]).implode().alias("coordinates_list")
+        pl.struct(["x", "y"]).implode().alias("coordinates_list"),
+        pl.col("point_id").implode().alias("point_ids")
     ])
 
     # Compute average speed (length divided by duration) for each track
@@ -78,27 +79,67 @@ def tracks_from_points_with_stops(points: pl.DataFrame) -> pl.DataFrame:
     return tracks
 
 
+def analysis_tracks(tracks: pl.DataFrame, points: pl.DataFrame, point_id_col="point_id"):
+    """
+    Compute summary statistics for each track based on its related points.
 
-def analysis_tracks(tracks, points):
-    accuracies = points['accuracy'].to_dict()
-    durations = points['t'].to_dict()
-    lengths = points['d'].to_dict()
-    speeds = points['s'].to_dict()
-    times = points['ts'].to_dict()
-    tracks['accuracy_max'] = tracks['point_ids'].apply(lambda x: np.max([accuracies[i] for i in x]))
-    tracks['accuracy_moy'] = tracks['point_ids'].apply(lambda x: np.mean([accuracies[i] for i in x]))
-    tracks['sampling_duration_max'] = tracks['point_ids'].apply(lambda x: np.max([durations[i] for i in x]))
-    tracks['sampling_duration_moy'] = tracks['point_ids'].apply(lambda x: np.mean([durations[i] for i in x]))
-    tracks['sampling_distance_max'] = tracks['point_ids'].apply(lambda x: np.max([lengths[i] for i in x]))
-    tracks['sampling_distance_moy'] = tracks['point_ids'].apply(lambda x: np.mean([lengths[i] for i in x]))
-    tracks['speed_max'] = tracks['point_ids'].apply(lambda x: np.max([speeds[i] for i in x]))
-    tracks['speed_median'] = tracks['point_ids'].apply(lambda x: np.median([speeds[i] for i in x]))
-    tracks['speed_95th'] = tracks['point_ids'].apply(lambda x: np.percentile([speeds[i] for i in x], 95))
-    tracks['first_ts'] = tracks['point_ids'].apply(lambda x: np.min([times[i] for i in x]))
-    tracks['last_ts'] = tracks['point_ids'].apply(lambda x: np.max([times[i] for i in x]))
-    tracks['departure_point'] = tracks['geometry'].apply(lambda line: Point(line.coords[0]))
-    tracks['end_point'] = tracks['geometry'].apply(lambda line: Point(line.coords[-1]))
+    For every track, aggregate statistics (accuracy, duration, length, speed, timestamps)
+    from the associated points listed in the 'point_ids' column.
+    The departure and end points are returned as raw coordinate tuples, 
+    taken from the 'coordinates' column, which should be a list of (x, y) tuples for each track.
 
+    Parameters
+    ----------
+    tracks : pl.DataFrame
+        Contains one row per track, with at least:
+            - 'point_ids': list of ids referencing points for the track
+            - 'coordinates': list of coordinate tuples for the track geometry
+    points : pl.DataFrame
+        Contains per-point data, must include:
+            - 'accuracy', 't', 'd', 's', 'ts', and the column with id 'point_id_col'
+    point_id_col : str, default "point_id"
+        Name of the column in 'points' identifying each point
+
+    Returns
+    -------
+    pl.DataFrame
+        Input tracks DataFrame with additional columns containing aggregated statistics for each track.
+        Departure and end points are given as coordinate tuples (x, y), not as geometric objects.
+    """
+
+    # Build fast lookup dicts: point_id -> value
+    accuracy_map = dict(zip(points[point_id_col].to_list(), points['accuracy'].to_list()))
+    t_map       = dict(zip(points[point_id_col].to_list(), points['t'].to_list()))
+    d_map       = dict(zip(points[point_id_col].to_list(), points['d'].to_list()))
+    s_map       = dict(zip(points[point_id_col].to_list(), points['s'].to_list()))
+    ts_map      = dict(zip(points[point_id_col].to_list(), points['ts'].to_list()))
+
+    tracks = tracks.with_columns([
+        # Accuracy statistics
+        pl.col('point_ids').apply(lambda ids: max(accuracy_map[i] for i in ids), return_dtype=pl.Float64).alias('accuracy_max'),
+        pl.col('point_ids').apply(lambda ids: sum(accuracy_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('accuracy_moy'),
+
+        # Duration statistics
+        pl.col('point_ids').apply(lambda ids: max(t_map[i] for i in ids), return_dtype=pl.Float64).alias('sampling_duration_max'),
+        pl.col('point_ids').apply(lambda ids: sum(t_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('sampling_duration_moy'),
+
+        # Distance statistics
+        pl.col('point_ids').apply(lambda ids: max(d_map[i] for i in ids), return_dtype=pl.Float64).alias('sampling_distance_max'),
+        pl.col('point_ids').apply(lambda ids: sum(d_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('sampling_distance_moy'),
+
+        # Speed statistics
+        pl.col('point_ids').apply(lambda ids: max(s_map[i] for i in ids), return_dtype=pl.Float64).alias('speed_max'),
+        pl.col('point_ids').apply(lambda ids: sorted(s_map[i] for i in ids)[len(ids) // 2], return_dtype=pl.Float64).alias('speed_median'),
+        pl.col('point_ids').apply(lambda ids: sorted(s_map[i] for i in ids)[int(0.95 * (len(ids)-1))], return_dtype=pl.Float64).alias('speed_95th'),
+
+        # Timestamp statistics
+        pl.col('point_ids').apply(lambda ids: min(ts_map[i] for i in ids), return_dtype=pl.Int64).alias('first_ts'),
+        pl.col('point_ids').apply(lambda ids: max(ts_map[i] for i in ids), return_dtype=pl.Int64).alias('last_ts'),
+
+        # Departure and end raw coordinate tuples (not geometric objects)
+        pl.col('coordinates').apply(lambda coords: tuple(coords[0]), return_dtype=pl.Object).alias('departure_point'),
+        pl.col('coordinates').apply(lambda coords: tuple(coords[-1]), return_dtype=pl.Object).alias('end_point'),
+    ])
     return tracks
 
 

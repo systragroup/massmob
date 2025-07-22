@@ -85,12 +85,47 @@ class Model():
     
     def analysis_tracks(self):
         """
-        Renvoie des indicateurs et des graphs décrivnat le jeu de données de traces.
-        >Nécessite d'utiliser .build_tracks() avant.
-        >Nécessite d'utiliser .filtering() avant.
+        Compute and append summary statistics for each track in the dataset.
+
+        This method enriches the `tracks` attribute with aggregated statistical columns
+        (e.g., accuracy, durations, distances, speed, timestamps) by analyzing the collection
+        of points associated with each track.
+        The departure and end points are also extracted as coordinate tuples from the 
+        'coordinates' column of each track.
+
+        Preconditions
+        -------------
+        - `self.tracks` must be initialized and non-empty, containing at least the columns:
+            - 'point_ids' : a list of point identifiers for each track
+            - 'coordinates' : a list of coordinate tuples for each track
+
+        Effects
+        -------
+        Updates the `tracks` attribute in-place, attaching new columns:
+            - accuracy_max, accuracy_moy,
+            - sampling_duration_max, sampling_duration_moy,
+            - sampling_distance_max, sampling_distance_moy,
+            - speed_max, speed_median, speed_95th,
+            - first_ts, last_ts,
+            - departure_point, end_point (tuple (x, y))
+
+        Returns
+        -------
+        None
+            The method updates `self.tracks` in-place.
+
+        Raises
+        ------
+        AssertionError
+            If `self.tracks` is not initialized.
+
+        Example
+        -------
+        >>> my_analyzer.analysis_tracks()
+        >>> print(my_analyzer.tracks.columns)
         """
-        assert self.tracks is not None, 'Tracks are not built, use methode .build_tracks() first'
-        analysis.analysis_tracks(self.tracks)
+        assert self.tracks is not None, 'Tracks are not built, build them first'
+        tracks.analysis_tracks(self.tracks, self.points)
     
     def mapmatching(self, **kwargs):
         """
