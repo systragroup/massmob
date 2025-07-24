@@ -146,96 +146,193 @@ def analysis_tracks(tracks: pl.DataFrame, points: pl.DataFrame, point_id_col="po
     ])
     return tracks
 
-
-def build_tracked_points(
-    points: pl.DataFrame,
-    MAX_SECONDS_DELAY_BETWEEN_POINTS: int = 60 * 60,
-    STOP_SPEED_THRESHOLD_KMH: float = 1,
-    IDLING_PHONE_METERS_DISTANCE: float = 200,
-    MAKING_A_STOP_SECONDS_DELAY: float = 10 * 60,
-    MIN_TRIP_DURATION_SECONDS: float = 60 * 2,
-    MIN_TRIP_DISTANCE_METERS: float = 200
-) -> pl.DataFrame:
+def apply_time_and_phone_cut(points: pl.DataFrame, max_delay: int) -> pl.DataFrame:
     """
-    Identifie, segmente et filtre les trajets dans un DataFrame Polars de points GPS/horodatés.
+    Marks trajectory cuts based on excessive time delay between points or phone change.
+    Sets values (d, t, s) to 0 if the threshold is exceeded.
 
-    Retourne le DataFrame filtré et segmenté, prêt à l'analyse.
+    Args:
+        points (pl.DataFrame): DataFrame of points with columns 't', 'd', 's', 'new_phone'.
+        max_delay (int): Maximum allowed time between two points before forcing a cut.
+
+    Returns:
+        pl.DataFrame: Updated DataFrame with modified 'd', 't', 's', and a boolean 'cut' column.
     """
-
-    # Nettoyage amont (fournir des alternatives si stops.* fonctionne sur Polars)
-    points = stops.clean_points(points)
-    points = stops.stops_append_d_s_t(points)
-
-    # Marquages et coupures de points
+    # Flag when excessive time between points
     points = points.with_columns([
-        (pl.col('t') > MAX_SECONDS_DELAY_BETWEEN_POINTS).alias('duration_threshold_exceeded')
+        (pl.col('t') > max_delay).alias('duration_threshold_exceeded')
     ])
+    # Reset duration, distance, speed where needed
     points = points.with_columns([
         pl.when(pl.col('duration_threshold_exceeded')).then(0).otherwise(pl.col('d')).alias('d'),
         pl.when(pl.col('duration_threshold_exceeded')).then(0).otherwise(pl.col('t')).alias('t'),
         pl.when(pl.col('duration_threshold_exceeded')).then(0).otherwise(pl.col('s')).alias('s')
     ])
+    # Mark cut column if excessive delay or new phone
     points = points.with_columns([
         (pl.col('duration_threshold_exceeded') | pl.col('new_phone')).alias('cut')
     ]).drop(['duration_threshold_exceeded', 'new_phone'])
+    return points
 
-    # Low speed
+def apply_user_cut(points: pl.DataFrame, cut_at_points: list = None, cut_id_col: str = None) -> pl.DataFrame:
+    """
+    Marks trajectory cuts at user-specified positions (row indices or column values).
+
+    Args:
+        points (pl.DataFrame): Input DataFrame with 'cut' column.
+        cut_at_points (list): List of row indices or values in cut_id_col.
+        cut_id_col (str): If specified, indicates the column for cut values.
+
+    Returns:
+        pl.DataFrame: Updated DataFrame with modified 'cut' column.
+    """
+    if cut_at_points is not None and len(cut_at_points) > 0:
+        if cut_id_col is None:
+            # By row indices (mask)
+            mask = pl.Series([i in cut_at_points for i in range(points.height)])
+            points = points.with_columns([
+                (pl.col('cut') | mask).alias('cut')
+            ])
+        else:
+            # By custom column values
+            points = points.with_columns([
+                (pl.col('cut') | pl.col(cut_id_col).is_in(cut_at_points)).alias('cut')
+            ])
+    return points
+
+def mark_lowspeed(points: pl.DataFrame, stop_speed_threshold: float) -> pl.DataFrame:
+    """
+    Marks points as 'low_speed' if their speed is below threshold.
+
+    Args:
+        points (pl.DataFrame): DataFrame with 's' (speed) column.
+        stop_speed_threshold (float): Speed threshold for stops (in km/h).
+
+    Returns:
+        pl.DataFrame: Updated with boolean 'low_speed' column.
+    """
     points = points.with_columns([
-        (pl.col('s') < STOP_SPEED_THRESHOLD_KMH).alias('low_speed')
+        (pl.col('s') < stop_speed_threshold).alias('low_speed')
     ])
-    # Compteur cumulatif sur coupe/arrêt => trip_group
+    return points
+
+def assign_trip_group(points: pl.DataFrame) -> pl.DataFrame:
+    """
+    Assigns a temporary trip group based on the cumulated number of cuts or low speed.
+
+    Args:
+        points (pl.DataFrame): DataFrame with 'cut' and 'low_speed' columns.
+
+    Returns:
+        pl.DataFrame: Updated with integer 'trip_group' column.
+    """
     points = points.with_columns([
         ((pl.col('cut') | pl.col('low_speed')).cast(pl.Int32).cum_sum()).alias('trip_group')
     ])
+    return points
 
-    # Mark "noise_trip"
-    points = stops.stops_identify_noise_trips(points, IDLING_PHONE_METERS_DISTANCE)
+def mark_stop_and_noise(points: pl.DataFrame, idling_distance: float) -> pl.DataFrame:
+    """
+    Identifies noisy (idle) points and marks all stops.
+
+    Args:
+        points (pl.DataFrame): DataFrame with 'low_speed' column.
+        idling_distance (float): Distance threshold for phone idling (in meters).
+
+    Returns:
+        pl.DataFrame: Updated with boolean 'noise_trip' and 'stop' columns.
+    """
+    # Use external logic for idling phone
+    points = stops.stops_identify_noise_trips(points, idling_distance)
     points = points.with_columns([
         (pl.col('low_speed') | pl.col('noise_trip')).alias('stop')
     ])
+    return points
 
-    # Stop group
+def assign_stop_group(points: pl.DataFrame) -> pl.DataFrame:
+    """
+    Assigns a stop group ID. Each segment between stops receives a unique ID.
+
+    Args:
+        points (pl.DataFrame): DataFrame with 'stop' column.
+
+    Returns:
+        pl.DataFrame: Updated with integer 'stop_group' column.
+    """
     points = points.with_columns([
-        # ((~pl.col('stop')).cast(pl.Int32).cum_sum().over("phone_id")).alias('stop_group')
         ((~pl.col('stop')).cast(pl.Int32).cum_sum()).alias('stop_group')
     ])
+    return points
 
+def remove_short_stops(points: pl.DataFrame, min_stop_duration: float) -> pl.DataFrame:
+    """
+    Identifies and removes (ignores) stops with a duration below the configured minimum.
+
+    Args:
+        points (pl.DataFrame): DataFrame with 'stop_group' and 'stop' columns.
+        min_stop_duration (float): Minimal stop duration (seconds).
+
+    Returns:
+        pl.DataFrame: With filtered 'stop' column, and removes helper columns.
+    """
+    # Compute duration per stop group
     stop_durations = (
-        points.group_by('stop_group').agg(
-            (pl.col('ts').max() - pl.col('ts').min()).alias('duration')
-        )
+        points.group_by('stop_group')
+        .agg((pl.col('ts').max() - pl.col('ts').min()).alias('duration'))
     )
+    # Identify short stops
     short_stop_groups = stop_durations.filter(
-        pl.col('duration') < MAKING_A_STOP_SECONDS_DELAY
+        pl.col('duration') < min_stop_duration
     )['stop_group']
-
+    # Flag stop points belonging to short stops
     points = points.with_columns([
         pl.col('stop_group').is_in(short_stop_groups).alias('short_stop'),
         pl.when(pl.col('stop_group').is_in(short_stop_groups))
           .then(False).otherwise(pl.col('stop')).alias('stop')
     ]).drop(['low_speed', 'trip_group', 'noise_trip', 'short_stop', 'stop_group'])
+    return points
 
-    # Segmentation finale
-    def set_trace_id(df: pl.DataFrame, stop_column: str, cut_column: str, sort_by=['phone_id', 'ts']) -> pl.DataFrame:
-        df = df.with_columns([pl.lit(False).alias('fake_points')])
-        dup = df.filter(pl.col(stop_column)).with_columns([
-            pl.lit(True).alias('fake_points'),
-            pl.lit(False).alias(stop_column)
-        ])
-        df = pl.concat([df, dup])
-        sort_cols = sort_by + [stop_column]
-        df = df.sort(sort_cols)
-        df = df.with_columns([
-            ((pl.col(stop_column).cast(pl.Int32) | pl.col(cut_column).cast(pl.Int32))
-              .cum_sum()
-              .alias('track_id')
-            )
-        ])
-        return df
+def assign_track_id(points: pl.DataFrame) -> pl.DataFrame:
+    """
+    Assigns a unique trajectory (track) id for each valid trip segment.
 
-    points = set_trace_id(points, 'stop', 'cut', sort_by=['phone_id', 'ts'])
+    Args:
+        points (pl.DataFrame): DataFrame with 'stop' and 'cut' columns.
 
-    # On retire les trajets trop courts
+    Returns:
+        pl.DataFrame: Updated with 'track_id' column.
+    """
+    # Duplicate stop points for tracking logic (fake_points)
+    points = points.with_columns([pl.lit(False).alias('fake_points')])
+    dup = points.filter(pl.col("stop")).with_columns([
+        pl.lit(True).alias('fake_points'),
+        pl.lit(False).alias('stop')
+    ])
+    # Concatenate original and duplicated points, sort for correct trace assignment
+    points = pl.concat([points, dup])
+    points = points.sort(['phone_id', 'ts', 'stop'])
+    # Assigns track_id as cumulative sum of stop OR cut event
+    points = points.with_columns([
+        ((pl.col('stop').cast(pl.Int32) | pl.col('cut').cast(pl.Int32))
+          .cum_sum()
+          .alias('track_id')
+        )
+    ])
+    return points
+
+def filter_tracks(points: pl.DataFrame, min_trip_duration: float, min_trip_span: float) -> pl.DataFrame:
+    """
+    Removes insignificant tracks: too short in time, or too spatially limited, or with too few points.
+
+    Args:
+        points (pl.DataFrame): DataFrame including 'track_id', 't', 'x', 'y', 'ts'.
+        min_trip_duration (float): Minimum trip duration (in seconds).
+        min_trip_span (float): Minimal trip span (in meters).
+
+    Returns:
+        pl.DataFrame: Filtered DataFrame with valid tracks only.
+    """
+    # Gather statistics for each track
     trip_stats = (
         points.group_by("track_id")
         .agg([
@@ -246,15 +343,26 @@ def build_tracked_points(
             (pl.col("y").max() - pl.col("y").min()).alias("span_y"),
         ])
     )
+    # Filter on minimal number of points, distance, and duration
     valid_tracks = trip_stats.filter(
         (pl.col("n_pts") > 1)
-        & ((pl.col("span_x") > MIN_TRIP_DISTANCE_METERS) | (pl.col("span_y") > MIN_TRIP_DISTANCE_METERS))
-        & (pl.col("trip_t") > MIN_TRIP_DURATION_SECONDS)
+        & ((pl.col("span_x") > min_trip_span) | (pl.col("span_y") > min_trip_span))
+        & (pl.col("trip_t") > min_trip_duration)
     )["track_id"]
     points = points.filter(pl.col("track_id").is_in(valid_tracks))
+    return points
 
-    # TODO: on est ici en UTC -> changer en local
-    # Parsing du jour
+def add_local_day(points: pl.DataFrame) -> pl.DataFrame:
+    """
+    Adds a readable 'day' column derived from 'eventDate' and ensures that phone_id is a string.
+
+    Args:
+        points (pl.DataFrame): DataFrame including 'eventDate' and 'phone_id'.
+
+    Returns:
+        pl.DataFrame: DataFrame with 'day' and string-typed 'phone_id'.
+    """
+    # TODO: je crois que c’est en UTC -> à corriger
     points = points.with_columns([
         (
             pl.col("eventDate").dt.year().cast(pl.Utf8) + "-" +
@@ -265,6 +373,55 @@ def build_tracked_points(
     points = points.with_columns([pl.col("phone_id").cast(pl.Utf8)])
     return points
 
+def build_tracked_points(
+    points: pl.DataFrame,
+    max_seconds_delay_between_points: int = 60 * 60,
+    stop_speed_threshold_kmh: float = 1,
+    idling_phone_meters_distance: float = 200,
+    making_a_stop_seconds_delay: float = 10 * 60,
+    min_trip_duration_seconds: float = 60 * 2,
+    min_trip_distance_meters: float = 200,
+    cut_at_points: list = None,
+    cut_id_col: str = None
+) -> pl.DataFrame:
+    """
+    Identifies, segments, and filters valid trips in a Polars DataFrame of timestamped geolocated points.
+    Cuts trajectories based on time/phone/user rules, applies stop detection and noise filtering,
+    assigns unique trip identifiers, and removes trivial or noisy traces.
+
+    Args:
+        points (pl.DataFrame): Input Polars DataFrame of points.
+        max_seconds_delay_between_points (int): Max time allowed between points before cut.
+        stop_speed_threshold_kmh (float): Speed threshold (in km/h) to consider as stopped.
+        idling_phone_meters_distance (float): Distance threshold for idling noise.
+        making_a_stop_seconds_delay (float): Minimum stop duration to be considered valid.
+        min_trip_duration_seconds (float): Minimum duration of trip to keep.
+        min_trip_distance_meters (float): Minimum spatial span of trip to keep.
+        cut_at_points (list): (Optional) List of row indices or IDs to force a cut.
+        cut_id_col (str): (Optional) Column name if cut_at_points are IDs.
+
+    Returns:
+        pl.DataFrame: DataFrame segmented and filtered, ready for further trip analysis.
+    """
+    # Clean and enrich input
+    points = stops.clean_points(points)
+    points = stops.stops_append_d_s_t(points)
+    # Apply cut logic based on time, phone, and user-requested cuts
+    points = apply_time_and_phone_cut(points, max_seconds_delay_between_points)
+    points = apply_user_cut(points, cut_at_points, cut_id_col)
+    # Stop detection logic
+    points = mark_lowspeed(points, stop_speed_threshold_kmh)
+    points = assign_trip_group(points)
+    points = mark_stop_and_noise(points, idling_phone_meters_distance)
+    points = assign_stop_group(points)
+    points = remove_short_stops(points, making_a_stop_seconds_delay)
+    # Assign trip/segment IDs
+    points = assign_track_id(points)
+    # Filter irrelevant or noisy tracks
+    points = filter_tracks(points, min_trip_duration_seconds, min_trip_distance_meters)
+    # Final parsing and day annotation
+    points = add_local_day(points)
+    return points
 
 def filtering(
     pts: pl.DataFrame,
