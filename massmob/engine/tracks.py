@@ -42,7 +42,7 @@ def tracks_from_points_with_stops(points: pl.DataFrame) -> pl.DataFrame:
     pl.DataFrame
         Aggregated DataFrame at track level with columns:
         ['phone_id', 'track_id', 'accuracy_median', 'sampling_duration_median',
-         'sampling_distance_median', 'duration', 'length', 'point_ids', 'coordinates_list',
+         'sampling_distance_median', 'duration', 'length', 'point_ids', 'coordinates',
          'average_speed']
     """
     # Add a unique index to identify points within the track (analogous to point_ids)
@@ -67,7 +67,7 @@ def tracks_from_points_with_stops(points: pl.DataFrame) -> pl.DataFrame:
         pl.col("duration").sum().alias("duration"),
         pl.col("length").sum().alias("length"),
         # List of structs representing (x, y) coordinates in order
-        pl.struct(["x", "y"]).implode().alias("coordinates_list"),
+        pl.struct(["x", "y"]).implode().alias("coordinates"),
         pl.col("point_id").implode().alias("point_ids")
     ])
 
@@ -109,36 +109,40 @@ def analysis_tracks(tracks: pl.DataFrame, points: pl.DataFrame, point_id_col="po
 
     # Build fast lookup dicts: point_id -> value
     accuracy_map = dict(zip(points[point_id_col].to_list(), points['accuracy'].to_list()))
-    t_map       = dict(zip(points[point_id_col].to_list(), points['t'].to_list()))
-    d_map       = dict(zip(points[point_id_col].to_list(), points['d'].to_list()))
-    s_map       = dict(zip(points[point_id_col].to_list(), points['s'].to_list()))
-    ts_map      = dict(zip(points[point_id_col].to_list(), points['ts'].to_list()))
+    t_map = dict(zip(points[point_id_col].to_list(), points['t'].to_list()))
+    d_map = dict(zip(points[point_id_col].to_list(), points['d'].to_list()))
+    s_map = dict(zip(points[point_id_col].to_list(), points['s'].to_list()))
+    ts_map = dict(zip(points[point_id_col].to_list(), points['ts'].to_list()))
+    day_map = dict(zip(points[point_id_col].to_list(), points['day'].to_list()))
 
     tracks = tracks.with_columns([
-        # Accuracy statistics
-        pl.col('point_ids').apply(lambda ids: max(accuracy_map[i] for i in ids), return_dtype=pl.Float64).alias('accuracy_max'),
-        pl.col('point_ids').apply(lambda ids: sum(accuracy_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('accuracy_moy'),
+         # Accuracy statistics
+        pl.col('point_ids').map_elements(lambda ids: max(accuracy_map[i] for i in ids), return_dtype=pl.Float64).alias('accuracy_max'),
+        pl.col('point_ids').map_elements(lambda ids: sum(accuracy_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('accuracy_moy'),
 
         # Duration statistics
-        pl.col('point_ids').apply(lambda ids: max(t_map[i] for i in ids), return_dtype=pl.Float64).alias('sampling_duration_max'),
-        pl.col('point_ids').apply(lambda ids: sum(t_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('sampling_duration_moy'),
+        pl.col('point_ids').map_elements(lambda ids: max(t_map[i] for i in ids), return_dtype=pl.Float64).alias('sampling_duration_max'),
+        pl.col('point_ids').map_elements(lambda ids: sum(t_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('sampling_duration_moy'),
 
         # Distance statistics
-        pl.col('point_ids').apply(lambda ids: max(d_map[i] for i in ids), return_dtype=pl.Float64).alias('sampling_distance_max'),
-        pl.col('point_ids').apply(lambda ids: sum(d_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('sampling_distance_moy'),
+        pl.col('point_ids').map_elements(lambda ids: max(d_map[i] for i in ids), return_dtype=pl.Float64).alias('sampling_distance_max'),
+        pl.col('point_ids').map_elements(lambda ids: sum(d_map[i] for i in ids) / len(ids), return_dtype=pl.Float64).alias('sampling_distance_moy'),
 
         # Speed statistics
-        pl.col('point_ids').apply(lambda ids: max(s_map[i] for i in ids), return_dtype=pl.Float64).alias('speed_max'),
-        pl.col('point_ids').apply(lambda ids: sorted(s_map[i] for i in ids)[len(ids) // 2], return_dtype=pl.Float64).alias('speed_median'),
-        pl.col('point_ids').apply(lambda ids: sorted(s_map[i] for i in ids)[int(0.95 * (len(ids)-1))], return_dtype=pl.Float64).alias('speed_95th'),
+        pl.col('point_ids').map_elements(lambda ids: max(s_map[i] for i in ids), return_dtype=pl.Float64).alias('speed_max'),
+        pl.col('point_ids').map_elements(lambda ids: sorted(s_map[i] for i in ids)[len(ids) // 2], return_dtype=pl.Float64).alias('speed_median'),
+        pl.col('point_ids').map_elements(lambda ids: sorted(s_map[i] for i in ids)[int(0.95 * (len(ids)-1))], return_dtype=pl.Float64).alias('speed_95th'),
 
         # Timestamp statistics
-        pl.col('point_ids').apply(lambda ids: min(ts_map[i] for i in ids), return_dtype=pl.Int64).alias('first_ts'),
-        pl.col('point_ids').apply(lambda ids: max(ts_map[i] for i in ids), return_dtype=pl.Int64).alias('last_ts'),
+        pl.col('point_ids').map_elements(lambda ids: min(ts_map[i] for i in ids), return_dtype=pl.Int64).alias('first_ts'),
+        pl.col('point_ids').map_elements(lambda ids: max(ts_map[i] for i in ids), return_dtype=pl.Int64).alias('last_ts'),
+
+        # day statistics
+        pl.col('point_ids').map_elements(lambda ids: min(day_map[i] for i in ids), return_dtype=pl.Object).alias('departure_day'),
 
         # Departure and end raw coordinate tuples (not geometric objects)
-        pl.col('coordinates').apply(lambda coords: tuple(coords[0]), return_dtype=pl.Object).alias('departure_point'),
-        pl.col('coordinates').apply(lambda coords: tuple(coords[-1]), return_dtype=pl.Object).alias('end_point'),
+        pl.col('coordinates').map_elements(lambda coords: tuple(coords[0]), return_dtype=pl.Object).alias('departure_point'),
+        pl.col('coordinates').map_elements(lambda coords: tuple(coords[-1]), return_dtype=pl.Object).alias('end_point'),
     ])
     return tracks
 

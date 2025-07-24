@@ -58,7 +58,7 @@ class ChunkModel:
         Apply the filtering function to each chunk, result is merged with correct chunk assignment.
         """
         dfs = []
-        for i in range(self.nchunks):
+        for i in tqdm(range(self.nchunks)):
             pts_chunk = self.points.filter(pl.col("chunk") == i)
             if pts_chunk.height == 0:
                 continue
@@ -75,7 +75,7 @@ class ChunkModel:
         trks_list = []
         pts_new = []
 
-        for i in range(self.nchunks):
+        for i in tqdm(range(self.nchunks)):
             pts_chunk = self.points.filter(pl.col("chunk") == i)
             if pts_chunk.height == 0:
                 continue
@@ -92,7 +92,7 @@ class ChunkModel:
         Analyze tracks per chunk, storing result in self.tracks.
         """
         dfs = []
-        for i in range(self.nchunks):
+        for i in tqdm(range(self.nchunks)):
             trks_chunk = self.tracks.filter(pl.col("chunk") == i)
             pts_chunk = self.points.filter(pl.col("chunk") == i)
             if trks_chunk.height > 0:

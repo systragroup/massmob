@@ -77,13 +77,35 @@ class MassModel(
             return model.Model.analysis_tracks(self)
         
     def describe(self):
+        """
+        Generate summary statistics about the main data attributes.
+
+        Returns
+        -------
+        dict
+            Dictionary with formatted counts of points, unique phones, and tracks.
+
+        Notes
+        -----
+        - Uses Polars-native commands for performance.
+        - Returns a dictionary, Polars-first (not a pandas Series).
+        """
+        # Compute the number of points in the main DataFrame
+        points_count = self.points.height
+        # Compute the number of unique phone IDs in the main DataFrame
+        unique_phones = self.points["phone_id"].n_unique()
+
         results = {
-            'Points': f'{len(self.points):,}',
-            'Unique phones': f'{len(self.points.phone_id.unique()):,}',
+            "Points": f"{points_count:,}",
+            "Unique phones": f"{unique_phones:,}",
         }
-        if hasattr(self, 'tracks') and self.tracks is not None:
-            results.update({'Tracks': f'{len(self.tracks):,}'})
-        return pd.Series(results)
+
+        # If self.tracks exists and is not empty, add the track count
+        if hasattr(self, "tracks") and self.tracks is not None and self.tracks.height > 0:
+            results["Tracks"] = f"{self.tracks.height:,}"
+
+        return results
+
 
     def to_parquets(
         self,

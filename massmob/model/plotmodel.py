@@ -6,7 +6,7 @@ from shapely.geometry import LineString, Point
 
 def polars_tracks_to_geodataframe(df: pl.DataFrame, crs="EPSG:2154"):
     """
-    Transform a Polars DataFrame with a 'coordinates_list' column
+    Transform a Polars DataFrame with a 'coordinates' column
     (list of dicts or structs with 'x', 'y') into a GeoPandas GeoDataFrame,
     using LineString geometry.
     """
@@ -19,7 +19,7 @@ def polars_tracks_to_geodataframe(df: pl.DataFrame, crs="EPSG:2154"):
         return LineString([(pt['x'], pt['y']) for pt in coords])
 
     # Apply the conversion to each row
-    df['geometry'] = df['coordinates_list'].apply(coords_to_linestring)
+    df['geometry'] = df['coordinates'].apply(coords_to_linestring)
 
     # Build the GeoDataFrame
     gdf = gpd.GeoDataFrame(df, geometry="geometry", crs=crs)
