@@ -9,6 +9,7 @@ import zlib
 from concurrent.futures import ProcessPoolExecutor
 from massmob.model import model, plotmodel, integritymodel, chunkmodel
 from massmob.io import io
+import json
 
 def read_parquets(folder, omitted_attributes=(), only_attributes=None):
     files = [
@@ -17,7 +18,6 @@ def read_parquets(folder, omitted_attributes=(), only_attributes=None):
     ]
     keys = [f.split('.parquet')[0] for f in files]
 
-    # init model
     self = MassModel()
 
     iterator = tqdm(keys)
@@ -28,7 +28,16 @@ def read_parquets(folder, omitted_attributes=(), only_attributes=None):
             continue
         iterator.desc = key
         fpath = os.path.join(folder, f"{key}.parquet")
-        self.__setattr__(key, pl.read_parquet(fpath))
+        setattr(self, key, pl.read_parquet(fpath))
+
+    # lecture des args.json
+    args_path = os.path.join(folder, "args.json")
+    if os.path.exists(args_path):
+        with open(args_path, "r", encoding="utf-8") as f:
+            args = json.load(f)
+        for k, v in args.items():
+            setattr(self, k, v)
+
     return self
 
 def from_singlespot_zip(zip_path, **kwargs):
@@ -119,6 +128,8 @@ class MassModel(
             shutil.rmtree(folder, ignore_errors=True)
         os.makedirs(folder, exist_ok=True)
 
+        args = {}
+
         def export_parquet(key, value):
             fpath = os.path.join(folder, f"{key}.parquet")
             # Pandas DataFrame
@@ -127,9 +138,9 @@ class MassModel(
             # Polars DataFrame
             elif "polars" in str(type(value)).lower():
                 value.write_parquet(fpath)
-            # Autre type : sauvegarde non implémentée
+            # Autre → stocké dans args.json
             else:
-                print(f"Export failed {key} (type: {type(value)})")
+                args[key] = value
 
         if max_workers == 1:
             iterator = tqdm(self.__dict__.items())
@@ -148,6 +159,11 @@ class MassModel(
                     if only_attributes is not None and key not in only_attributes:
                         continue
                     executor.submit(export_parquet, key, value)
+
+        # Sauvegarde des args en JSON
+        if args:
+            with open(os.path.join(folder, "args.json"), "w", encoding="utf-8") as f:
+                json.dump(args, f, ensure_ascii=False, indent=2)
 
 
     def copy(self):

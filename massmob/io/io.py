@@ -17,11 +17,8 @@ def singlespot_zip_to_points(
 
     Args:
         zip_path (str): Path to the input zip archive containing .gz files.
-        parquet_path (str): Output path for the final Parquet file.
         cols_to_keep (list): Columns to retain in the dataset.
         cols_to_drop (list): Columns to drop from each file.
-        compression (str): Parquet compression algorithm.
-        row_group_size (int): Row group size for Parquet export (performance tuning).
     """
     dfs = []  # Will store each DataFrame
 
@@ -53,11 +50,7 @@ def singlespot_zip_to_points(
 
     # Concatenate all DataFrames into one
     all_df = pl.concat(dfs, rechunk=True)
-    print(f"Total points before global deduplication: {len(all_df)}")
-
-    # Global deduplication (across all files)
-    all_df = all_df.unique()
-    print(f"Total final points (after deduplication): {len(all_df)}")
+    print(f"Total points: {len(all_df)}")
 
     # Optional: optimize data types for smaller Parquet size
     pts = all_df.with_columns([

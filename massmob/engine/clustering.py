@@ -72,7 +72,7 @@ def cluster_home(points, zoning, NOMBRE_MIN_POINT_PAR_CLUSTER=2, RAYON_DE_PRISE_
 
 
     ech_points = gpd.GeoDataFrame(ech_points, geometry=gpd.points_from_xy(ech_points.longitude, ech_points.latitude), crs= 'EPSG:4326')
-    ech_points = ech_points.to_crs('EPSG:2154')
+    ech_points = ech_points.to_crs('EPSG:2154')  # TODO: ajout gestion CRS lors de l’import
     ech_points['time_prec'] = ech_points['eventDate'].shift(1)
     ech_points['loc_prec'] = ech_points['geometry'].shift(1)
     ech_points['time_elapsed'] = ech_points.apply(_calc_time_elapsed, axis=1)
@@ -130,7 +130,7 @@ def cluster_work(points,zoning,NOMBRE_MIN_POINT_PAR_CLUSTER=1,RAYON_DE_PRISE_EN_
     ech_tel = points['phone_id'].unique()
     ech_points = points.loc[points['phone_id'].isin(ech_tel)]
     ech_points = gpd.GeoDataFrame(ech_points, geometry=gpd.points_from_xy(ech_points.longitude, ech_points.latitude), crs= 'EPSG:4326')
-    ech_points = ech_points.to_crs('EPSG:2154')
+    ech_points = ech_points.to_crs('EPSG:2154')  # TODO: ajout gestion CRS lors de l’import
     ech_points['time_prec'] = ech_points['eventDate'].shift(1)
     ech_points['loc_prec'] = ech_points['geometry'].shift(1)
     ech_points['time_elapsed'] = ech_points.apply(_calc_time_elapsed, axis=1)

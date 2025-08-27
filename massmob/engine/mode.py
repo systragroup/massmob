@@ -79,7 +79,7 @@ def inference_mode_logic_rules(tracks,
 
     # traces_well_sampled.loc[traces_well_sampled['dist_departure_arrival']<100,'mode'] = 'motorized'
     
-    # convert into str
+    # convert into str  # TODO: ajout gestion CRS lors de l’import
     traces_output_gpd = gpd.GeoDataFrame(traces_well_sampled, geometry=traces_well_sampled['geometry'], crs=2154)
     traces_output_gpd.reset_index(inplace=True)
     traces_full = traces_output_gpd[['track_id', 'geometry', 'departure_point', 'arrival_point', 'mode']]

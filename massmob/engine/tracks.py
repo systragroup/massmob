@@ -138,11 +138,11 @@ def analysis_tracks(tracks: pl.DataFrame, points: pl.DataFrame, point_id_col="po
         pl.col('point_ids').map_elements(lambda ids: max(ts_map[i] for i in ids), return_dtype=pl.Int64).alias('last_ts'),
 
         # day statistics
-        pl.col('point_ids').map_elements(lambda ids: min(day_map[i] for i in ids), return_dtype=pl.Object).alias('departure_day'),
+        pl.col('point_ids').map_elements(lambda ids: min(day_map[i] for i in ids), return_dtype=pl.String).alias('departure_day'),
 
         # Departure and end raw coordinate tuples (not geometric objects)
-        pl.col('coordinates').map_elements(lambda coords: tuple(coords[0]), return_dtype=pl.Object).alias('departure_point'),
-        pl.col('coordinates').map_elements(lambda coords: tuple(coords[-1]), return_dtype=pl.Object).alias('end_point'),
+        pl.col('coordinates').list.first().alias('departure_point'),
+        pl.col('coordinates').list.last().alias('end_point'),
     ])
     return tracks
 
@@ -427,15 +427,17 @@ def filtering(
     pts: pl.DataFrame,
     phone_id_column='phone_id',
     INACTIVE_PHONE_AREA_SIDE_METERS = 50,
-    MAX_ACCURACY = 50
+    MAX_ACCURACY = 50,
+    time_column="eventDate"
 ):
     """
     Filter points to keep only those that are sufficiently far from each other (phones not considered inactive).
     """
+    pts = stops.clean_points(pts, phone_column=phone_id_column, time_column=time_column)
     # Drop useless columns if present
     cols_to_drop = [col for col in ['speed', 'eventId', 'Unnamed: 0'] if col in pts.columns]
     pts = pts.drop(cols_to_drop)
-
+    # TODO: ajout gestion CRS lors de l’import
     # Prepare transformer for lon/lat --> x/y in Lambert-93 (EPSG:2154)
     transformer = Transformer.from_crs("epsg:4326", "epsg:2154", always_xy=True)
     # Vectorized conversion

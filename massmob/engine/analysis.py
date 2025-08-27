@@ -309,6 +309,7 @@ def number_by_zone(zoning,phones, label):
     phones_filtered = phones[['phone_id',f'{label}']]
 
     phones_filtered = gpd.GeoDataFrame(phones_filtered,geometry=phones_filtered[f'{label}'],crs=2154)
+    # TODO: ajout gestion CRS lors de l’import
 
 
     zones = phones_filtered.sjoin(zoning, predicate='intersects')
