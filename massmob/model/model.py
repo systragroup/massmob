@@ -6,7 +6,7 @@ import os
 import copy 
 import pickle
 from tqdm import tqdm
-from typing import List, Any
+from typing import List, Any, Optional, Set
 import shutil
 import zlib
 from concurrent.futures import ProcessPoolExecutor
@@ -148,6 +148,75 @@ class Model():
         restricted.points = points_restricted
 
         return restricted
+    
+    def cluster_home(
+        self,
+        min_samples: int = 2,
+        cluster_epsilon: float = 100.0,
+        only_stationary: bool = True,
+    ) -> pl.DataFrame:
+        """
+        Return home centroid per phone_id as a Polars DataFrame.
+
+        Parameters
+        ----------
+        min_samples : int
+            Minimum points for DBSCAN cluster.
+        cluster_epsilon : float
+            DBSCAN epsilon (meters).
+        only_stationary : bool
+            Keep only points with low speed for clustering.
+        """
+        found_locs = clustering.cluster_home(
+            self.points,
+            min_samples=min_samples,
+            cluster_epsilon=cluster_epsilon,
+            only_stationary=only_stationary
+        )
+        self.home_locations = clustering.add_missing_phone_ids(
+            self.points["phone_id"].unique().to_list(), 
+            found_locs,
+        )
+
+    def cluster_work(
+        self,
+        min_samples: int = 2,
+        cluster_epsilon: float = 100.0,
+        exclude_weekends: bool = True,
+        excluded_jjmm: Optional[Set[int]] = None,
+        only_stationary: bool = True,
+    ) -> pl.DataFrame:
+        """
+        Return work centroid per phone_id as a Polars DataFrame.
+
+        Parameters
+        ----------
+        min_samples : int
+            Minimum points for DBSCAN cluster.
+        cluster_epsilon : float
+            DBSCAN epsilon (meters).
+        exclude_weekends : bool
+            If True, filter weekends for clustering.
+        excluded_jjmm : set of int or None
+            Exclude these days (DDMM format).
+        only_stationary : bool
+            Keep only points with low speed for clustering.
+        """
+        found_locs = clustering.cluster_work(
+            self.points,
+            min_samples=min_samples,
+            cluster_epsilon=cluster_epsilon,
+            exclude_weekends=exclude_weekends,
+            excluded_jjmm=excluded_jjmm,
+            only_stationary=only_stationary
+        )
+
+        self.work_locations = clustering.add_missing_phone_ids(
+            self.points["phone_id"].unique().to_list(), 
+            found_locs
+        )
+
+#### OLD BELOW
 
     def analysis_points(self):
         """

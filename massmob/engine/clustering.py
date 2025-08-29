@@ -1,167 +1,158 @@
-import pandas as pd
-import geopandas as gpd
-from collections import Counter
+import polars as pl
 import numpy as np
 from sklearn.cluster import DBSCAN
+from collections import Counter
+from typing import Optional, Set, List, Dict, Any
 
-
-def _calc_time_elapsed(row):
+def filter_for_home(points: pl.DataFrame) -> pl.DataFrame:
     """
-    Calcule le temps écoulé entre le point et le point précédent en seconde
-    :param row: ligne du dataframe
-    :type: pandas dataframe row
-    :return: temps écoulé en seconde
+    Filter points falling in night hours (for home clustering).
     """
-    try:
-        time_elapsed = (row['eventDate'] - row['time_prec']).total_seconds()
-        if time_elapsed < 0:
-            time_elapsed = 0
-        return time_elapsed
-    except:
-        time_elapsed = 0
-        return time_elapsed
+    night_hours = {20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6, 7}
+    return points.filter(
+        pl.col("eventDate").dt.hour().is_in(night_hours)
+    )
 
-def _calc_dist_from_prec(row):
+def filter_for_work(
+    points: pl.DataFrame,
+    exclude_weekends: bool = True, 
+    excluded_jjmm: Optional[Set[int]] = None
+) -> pl.DataFrame:
     """
-    Calcule la distance entre le point et le point précédent en mètre
-    :param row: ligne du dataframe
-    :type: pandas dataframe row
-    :return: distance en mètre
+    Filter points in work hours and (optionally) remove weekends and dates.
     """
-    try:
-        dist = row['geometry'].distance(row['loc_prec'])
-        if dist < 0:
-            dist = 0
-        return dist
-    except:
-        dist = 0
-        return dist
+    work_hours = list(range(9, 20))
+    df = points.filter(
+        pl.col("eventDate").dt.hour().is_in(work_hours)
+    )
+    if exclude_weekends:
+        df = df.with_columns([
+            pl.col("eventDate").dt.weekday().alias("weekday")
+        ])
+        df = df.filter(pl.col("weekday") < 5).drop("weekday")
+    if excluded_jjmm:
+        df = df.with_columns([
+            pl.col("eventDate").dt.strftime("%d%m").cast(pl.Int32).alias("jjmm")
+        ])
+        excl = list(excluded_jjmm)
+        df = df.filter(~pl.col("jjmm").is_in(excl)).drop("jjmm")
+    return df
 
-def _calc_v_instant(row):
+def filter_stationary(
+    points: pl.DataFrame, 
+    speed_threshold: float = 2.0
+) -> pl.DataFrame:
     """
-    Calcule la vitesse instantanée en km/h
-    :param row: ligne du dataframe
-    :type: pandas dataframe row
-    :return: vitesse instantanée en km/h"""
-    try:
-        v = row['dist_from_prec'] / row['time_elapsed'] * 3,6
-        if v < 0:
-            v = 0
-        return v
-    except:
-        v = 0
-        return v
-
-def cluster_home(points, zoning, NOMBRE_MIN_POINT_PAR_CLUSTER=2, RAYON_DE_PRISE_EN_COMPTE_DU_CLUSTER=100):
+    Keep only points with instantaneous speed < threshold (km/h).
     """
-    Attribut un lieu de domicile à chaque telephone
-    :param points: dataframe des points de geolocalisation
-    :type: pandas dataframe des points avec les colonnes 'eventDate', 'phone_id'
-    :param zoning: dataframe des zones 
-    :type: geopandas dataframe du zoning
-    :return: dataframe des domiciles"""
-    communes = zoning.copy()
-    communes.astype({'zone_id': 'str'})
-    
-   
+    assert "s" in points.columns, "'s' column not found in points DataFrame, consider using stops_append_d_s_t function to add it."
+    filtered = points.filter(pl.col("s") < speed_threshold)
+    return filtered.drop("s")
 
-    print('Nombre de points :', len(points))
-    print('Nombre telephone :', len(points.phone_id.unique()))
-    ech_tel = points['phone_id'].unique()
-    ech_points = points.loc[points['phone_id'].isin(ech_tel)]
+def filter_min_points(points: pl.DataFrame, id_col: str = "phone_id", min_points: int = 10) -> pl.DataFrame:
+    """
+    Filtre les téléphones (id_col) ayant au moins min_points dans le DataFrame.
+    """
+    # Compte le nombre de points par identifiant
+    counts = points[id_col].value_counts().rename({"count": "n_points"})
+    valid_ids = counts.filter(pl.col("n_points") >= min_points)[id_col]
+    # Ne conserve que les points des identifiants assez fréquents
+    return points.filter(pl.col(id_col).is_in(valid_ids))
 
-
-    ech_points = gpd.GeoDataFrame(ech_points, geometry=gpd.points_from_xy(ech_points.longitude, ech_points.latitude), crs= 'EPSG:4326')
-    ech_points = ech_points.to_crs('EPSG:2154')  # TODO: ajout gestion CRS lors de l’import
-    ech_points['time_prec'] = ech_points['eventDate'].shift(1)
-    ech_points['loc_prec'] = ech_points['geometry'].shift(1)
-    ech_points['time_elapsed'] = ech_points.apply(_calc_time_elapsed, axis=1)
-    ech_points['dist_from_prec'] = ech_points.apply(_calc_dist_from_prec, axis=1)
-    ech_points['v_instant'] = ech_points.apply(_calc_v_instant, axis=1)
-
-    ech_points = ech_points[ech_points['accuracy'] < 50]
-    ech_points = ech_points[ech_points['eventDate'].apply(lambda x :x.hour).isin([20,21,22,23,0,1,2,3,4,5,6,7])]
-    ech_points = ech_points[ech_points['v_instant'] < 2]
-    ech_points_group_by_tel = ech_points.groupby('phone_id')
-
-    liste_dom=[]
-    i=0
-    for tel, points_tel in ech_points_group_by_tel:
-        print(f'phone {i/len(ech_points_group_by_tel)} ')
-        liste_points = np.array([[point.coords[:][0][0],point.coords[:][0][1]] for point in list(points_tel['geometry'])])
-        try:
-            clustering = DBSCAN(eps=100, min_samples=2).fit(liste_points) 
-        except ValueError:
-        
-            print('ValueError')
-            i+=1
+def cluster_location(
+    points: pl.DataFrame,
+    min_samples: int = 2,
+    cluster_epsilon: float = 100.0,  # meters in projected CRS
+    x_col: str = "x",
+    y_col: str = "y",
+    id_col: str = "phone_id",
+) -> pl.DataFrame:
+    """
+    For each ID, compute centroid of main DBSCAN cluster using projected (x, y).
+    Returns a Polars DataFrame with 'id_col', 'x', 'y'.
+    """
+    results: List[Dict[str, Any]] = []
+    # Iterate all unique IDs
+    for phone_id, subdf in points.group_by(id_col, maintain_order=True):
+        coords = np.vstack([
+            subdf[x_col].to_numpy(),
+            subdf[y_col].to_numpy()
+        ]).T
+        if coords.shape[0] < min_samples:
             continue
+        clustering = DBSCAN(
+            eps=cluster_epsilon, min_samples=min_samples
+        ).fit(coords)
         labels = clustering.labels_
-        compteur = Counter(labels)
-        points_tel['cluster'] = labels
-        valeur_plus_frequente = compteur.most_common(1)[0][0]
-        domicile = points_tel[points_tel['cluster'] == valeur_plus_frequente].unary_union.centroid
-        output = {'phone_id':tel, 'domicile':domicile}
-        liste_dom.append(output)
-        i+=1
-    domicile_df = pd.DataFrame(liste_dom)
-    return domicile_df
-
-def cluster_work(points,zoning,NOMBRE_MIN_POINT_PAR_CLUSTER=1,RAYON_DE_PRISE_EN_COMPTE_DU_CLUSTER=100):
-    """
-    Attribut un lieu de travail à chaque telephone
-    :param points: dataframe des points de geolocalisation
-    :type: pandas dataframe des points avec les colonnes 'eventDate', 'phone_id'
-    :param zoning: dataframe des zones de travail
-    :type: geopandas dataframe du zoning 
-    :param NOMBRE_MIN_POINT_PAR_CLUSTER: nombre minimum de point pour former un cluster
-    :type: int
-    :param RAYON_DE_PRISE_EN_COMPTE_DU_CLUSTER: rayon de prise en compte du cluster
-    :type: int
-    :return: dataframe des emplois par phone_id
-    """
-    communes = zoning.copy()
-    communes.astype({'zone_id': 'str'})
-    
-   
-
-    print('Nombre de points :', len(points))
-    print('Nombre telephone :', len(points.phone_id.unique()))
-    ech_tel = points['phone_id'].unique()
-    ech_points = points.loc[points['phone_id'].isin(ech_tel)]
-    ech_points = gpd.GeoDataFrame(ech_points, geometry=gpd.points_from_xy(ech_points.longitude, ech_points.latitude), crs= 'EPSG:4326')
-    ech_points = ech_points.to_crs('EPSG:2154')  # TODO: ajout gestion CRS lors de l’import
-    ech_points['time_prec'] = ech_points['eventDate'].shift(1)
-    ech_points['loc_prec'] = ech_points['geometry'].shift(1)
-    ech_points['time_elapsed'] = ech_points.apply(_calc_time_elapsed, axis=1)
-    ech_points['dist_from_prec'] = ech_points.apply(_calc_dist_from_prec, axis=1)
-    ech_points['v_instant'] = ech_points.apply(_calc_v_instant, axis=1)
-
-    ech_points = ech_points[ech_points['accuracy'] < 50]
-    ech_points = ech_points[~ech_points['eventDate'].apply(lambda x :x.day).isin([19,20,26,27])]
-    ech_points = ech_points[ech_points['eventDate'].apply(lambda x :x.hour).isin([9,10,11,12,13,14,15,16,17,18,19])]
-    ech_points = ech_points[ech_points['v_instant'] < 2]
-    ech_points_group_by_tel = ech_points.groupby('phone_id')
-
-    liste_dom=[]
-    i=0
-    for tel, points_tel in ech_points_group_by_tel:
-        print(f'phone {i/len(ech_points_group_by_tel)}')
-        liste_points = np.array([[point.coords[:][0][0],point.coords[:][0][1]] for point in list(points_tel['geometry'])])
-        try:
-            clustering = DBSCAN(eps=100, min_samples=2).fit(liste_points) 
-        except ValueError:
-        
-            print('ValueError')
-            i+=1
+        clusters = [l for l in labels if l >= 0]
+        if not clusters:
             continue
-        labels = clustering.labels_
-        compteur = Counter(labels)
-        points_tel['cluster'] = labels
-        valeur_plus_frequente = compteur.most_common(1)[0][0]
-        emploi = points_tel[points_tel['cluster'] == valeur_plus_frequente].unary_union.centroid
-        output = {'phone_id':tel, 'emploi':emploi}
-        liste_dom.append(output)
-        i+=1
-    domicile_df = pd.DataFrame(liste_dom)
-    return domicile_df
+        # Find largest non-noise cluster
+        main_cluster = Counter(clusters).most_common(1)[0][0]
+        indices_main = np.where(labels == main_cluster)[0]
+        coords_main = coords[indices_main]
+        centroid = coords_main.mean(axis=0)
+        results.append({
+            id_col: phone_id[0],
+            "x": float(centroid[0]),
+            "y": float(centroid[1]),
+        })
+    if results:
+        return pl.DataFrame(results)
+    # Return empty DataFrame with correct columns if no cluster found
+    return pl.DataFrame(
+        {id_col: [], "x": [], "y": []}
+    )
+
+def cluster_home(
+    points: pl.DataFrame, 
+    only_stationary: bool = True, 
+    min_points: int = 5,
+    **kwargs
+) -> pl.DataFrame:
+    """
+    Filter for night hours (+ stationary if desired) and cluster for home location.
+    """
+    filtered = filter_for_home(points)
+    if only_stationary:
+        filtered = filter_stationary(filtered)
+    filtered = filter_min_points(filtered, min_points=min_points)
+    return cluster_location(filtered, **kwargs)
+
+def cluster_work(
+    points: pl.DataFrame,
+    exclude_weekends: bool = True, 
+    excluded_jjmm: Optional[Set[int]] = None, 
+    only_stationary: bool = True, 
+    min_points: int = 5,
+    **kwargs
+) -> pl.DataFrame:
+    """
+    Filter for work hours (+ stationary if desired), and cluster for work location.
+    """
+    filtered = filter_for_work(points, exclude_weekends, excluded_jjmm)
+    if only_stationary:
+        filtered = filter_stationary(filtered)
+    filtered = filter_min_points(filtered, min_points=min_points)
+    return cluster_location(filtered, **kwargs)
+
+def add_missing_phone_ids(all_phone_ids, cluster_df, x_col="x", y_col="y"):
+        """
+        Retourne cluster_df complété des phone_id manquants, avec les coordonnées à None.
+        """
+        cluster_phone_ids = set(cluster_df["phone_id"].to_list())
+        missing_ids = [pid for pid in all_phone_ids if pid not in cluster_phone_ids]
+
+        if missing_ids:
+            # Crée un DataFrame avec les missing_ids et les coordonnées à None
+            missing_df = pl.DataFrame({
+                "phone_id": missing_ids,
+                x_col: [None] * len(missing_ids),
+                y_col: [None] * len(missing_ids),
+            })
+            # Concatène et réordonne
+            full_df = pl.concat([cluster_df, missing_df])
+        else:
+            full_df = cluster_df
+
+        return full_df
