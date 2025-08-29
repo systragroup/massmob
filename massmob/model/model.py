@@ -1,3 +1,4 @@
+
 import pandas as pd
 import polars as pl
 import numpy as np
@@ -5,6 +6,7 @@ import os
 import copy 
 import pickle
 from tqdm import tqdm
+from typing import List, Any
 import shutil
 import zlib
 from concurrent.futures import ProcessPoolExecutor
@@ -102,6 +104,50 @@ class Model():
         """
         assert self.tracks is not None, 'Tracks are not built, build them first'
         tracks.analysis_tracks(self.tracks, self.points)
+
+    def restrict_to_tracks(self, track_ids: List[Any]) -> "Model":
+        """
+        Returns a copy of the object restricted to the given track IDs. 
+        Only the tracks whose 'track_id' is in track_ids and the points used by those tracks 
+        are kept in the returned object.
+
+        Parameters
+        ----------
+        track_ids : List[Any]
+            List of track IDs to retain in the object.
+
+        Returns
+        -------
+        Model
+            A copy of the object with filtered tracks and points.
+        """
+        # 1. Filter tracks to keep only the selected track IDs
+        tracks_restricted = self.tracks.filter(
+            pl.col('track_id').is_in(track_ids)
+        )
+        
+        # 2. Gather all point IDs used in the selected tracks (assumes 'point_ids' is a list column)
+        # We explode 'point_ids' to flatten, then select unique ids
+        point_ids_in_tracks = (
+            tracks_restricted
+            .explode('point_ids')
+            .select('point_ids')
+            .unique()
+            .to_series()
+            .to_list()
+        )
+
+        # 3. Filter points DataFrame to keep only those present in the above list
+        points_restricted = self.points.filter(
+            pl.col('point_id').is_in(point_ids_in_tracks)
+        )
+        
+        # 4. Create and return a copy of the object with filtered tracks and points
+        restricted = self.copy()
+        restricted.tracks = tracks_restricted
+        restricted.points = points_restricted
+
+        return restricted
 
     def analysis_points(self):
         """

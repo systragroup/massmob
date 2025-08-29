@@ -86,6 +86,10 @@ class ChunkModel:
                 trks_list.append(tracks_chunk.with_columns(pl.lit(i).alias('chunk')))
         self.tracks = pl.concat(trks_list) if trks_list else pl.DataFrame([])
         self.points = pl.concat(pts_new) if pts_new else pl.DataFrame([])  # met à jour les points
+        # reset track ids to avoid duplicates
+        self.tracks = self.tracks.with_columns(
+            pl.arange(0, self.tracks.height).alias("track_id")
+        )
 
     def analysis_tracks(self):
         """
