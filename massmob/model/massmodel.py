@@ -114,7 +114,51 @@ class MassModel(
             results["Tracks"] = f"{self.tracks.height:,}"
 
         return results
+    
+    def build_home_locations(self, **kwargs):
+        """
+        Dispatches to Model or ChunkModel depending on the chunk structure.
+        """
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.cluster_home(self, **kwargs)
+        else:
+            return model.Model.cluster_home(self, **kwargs)
+        
+    def build_work_locations(self, **kwargs):
+        """
+        Dispatches to Model or ChunkModel depending on the chunk structure.
+        """
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.cluster_work(self, **kwargs)
+        else:
+            return model.Model.cluster_work(self, **kwargs)
+    
+    def resident_expansion(self, **kwargs):
+        """
+        Dispatches to Model or ChunkModel depending on the chunk structure.
+        """
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.resident_expansion(self, **kwargs)
+        else:
+            return model.Model.resident_expansion(self, **kwargs)
+    
+    def categorize_tracks(self, **kwargs):
+        """
+        Dispatches to Model or ChunkModel depending on the chunk structure.
+        """
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.categorize_tracks(self, **kwargs)
+        else:
+            return model.Model.categorize_tracks(self, **kwargs)
 
+    def prepare_tracks_to_mapmatch(self, **kwargs):
+        """
+        Dispatches to Model or ChunkModel depending on the chunk structure.
+        """
+        if getattr(self, "nchunks", 1) > 1:
+            return chunkmodel.ChunkModel.prepare_tracks_to_mapmatch(self, **kwargs)
+        else:
+            return model.Model.prepare_tracks_to_mapmatch(self, **kwargs)
 
     def to_parquets(
         self,

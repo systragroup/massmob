@@ -1,5 +1,6 @@
 
 import pandas as pd
+import geopandas as gpd
 import polars as pl
 import numpy as np
 import os
@@ -11,7 +12,7 @@ import shutil
 import zlib
 from concurrent.futures import ProcessPoolExecutor
 from massmob.model import massmodel
-from massmob.engine import mode, tracks, stops, analysis, mapmatching, clustering, volumes
+from massmob.engine import mode, tracks, stops, analysis, mapmatching, clustering, volumes, expansion, utils
 
 
 class Model():
@@ -215,6 +216,80 @@ class Model():
             self.points["phone_id"].unique().to_list(), 
             found_locs
         )
+
+    def resident_expansion(
+        self,
+        zoning: gpd.GeoDataFrame,
+        phone_penetration_rate: float = 0.7,
+        mobility_rate: float = 3.7
+    ) -> pl.DataFrame:
+        """
+        Return tracks with associated weight
+        
+        Parameters
+        ----------
+        zoning : gpd.GeoDataFrame
+            contains zones with 'zone_id' and 'population' column (and geometry)
+        phone_penetration_rate : float
+            part of population that has a smartphone -> helps finding the maximum captable population in each zone
+        mobility_rate : float
+            average number of journeys in a day
+        """
+
+        self.residents = expansion.residents(
+            self.home_locations,
+            zoning,
+        )
+        self.residents_by_zone = expansion.compute_ratio_pop_zone(
+            self.residents,
+            zoning,
+            phone_penetration_rate
+        )
+        self.residents = expansion.attribute_weight_zone(
+            self.residents,
+            self.residents_by_zone,
+        )
+        self.tracks, l_days, sum_weight_zone_dep = expansion.extract_info_to_K(
+            self.residents,
+            self.tracks
+        )
+        K = expansion.compute_K(
+            self.residents,
+            sum_weight_zone_dep,
+            l_days.n_unique(),
+            mobility_rate
+        )
+        self.tracks = expansion.compute_total_weight(
+            self.tracks,
+            self.residents_by_zone,
+            K
+        )
+
+    def categorize_tracks(
+        self,
+        perimeter: gpd.GeoDataFrame,
+    ):
+        """
+        Returns tracks with typology
+        """
+        bbox_ext, bbox_int = utils.build_bboxes(perimeter=perimeter)
+        self.tracks = tracks.categorize(self.tracks, perimeter, bbox_ext, bbox_int)
+
+    def prepare_tracks_to_mapmatch(
+        self,
+        bbox: tuple
+    ):
+        """
+        Returns new pl.DataFrame with tracks to mapmatch (which is an extract ok tracks in the bounding box of the road network)
+        """
+        self.points = utils.point_in_bbox(self.points, bbox)
+        points = self.points.rename({
+                "t": "duration",
+                "d": "length",
+                "accuracy": "accuracy_median"
+            })
+        self.tracks_to_mapmatch = tracks.tracks_to_mapmatch(points, self.tracks)
+        
 
 #### OLD BELOW
 

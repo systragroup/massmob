@@ -53,7 +53,7 @@ def polars_points_to_geodataframe(df: pl.DataFrame, coord_x="x", coord_y="y", cr
 
 class PlotModel():
 
-    def explore_tracks(self, expr, force: bool = False, **kwargs):
+    def explore_tracks(self, expr=None, sample_n=None, force: bool = False, **kwargs):
         """
         Interactively explore selected tracks as a map.
 
@@ -86,9 +86,15 @@ class PlotModel():
         >>> m = instance.explore_tracks(pl.col("average_speed") > 1, force=True, column="track_id")
         >>> m.save("my_tracks_map.html")
         """
-        filtered = self.tracks.filter(expr)
-        if not force and filtered.height > 1000:
-            filtered = filtered.head(1000)
+        filtered = self.tracks
+
+        if sample_n is not None:
+            filtered = filtered.sample(n=sample_n)
+        if expr is not None:
+            filtered = filtered.filter(expr)
+        if not force and filtered.height > 5000:
+            filtered = filtered.head(5000)
+            
         return polars_tracks_to_geodataframe(filtered).explore(**kwargs)
     
     def explore_points(self, expr, force: bool = False, coord_x="x", coord_y="y", **kwargs):
@@ -131,6 +137,28 @@ class PlotModel():
         if not force and filtered.height > 10000:
             filtered = filtered.head(10000)
         return polars_points_to_geodataframe(filtered, coord_x=coord_x, coord_y=coord_y).explore(**kwargs)
+    
+    def plot_homes(self, expr=None, force: bool = False, coord_x="x", coord_y="y", **kwargs):
+        if expr is not None:
+            homes = self.home_locations.filter(expr)
+        else:
+            homes = self.home_locations
+        if not force and homes.height > 1000:
+            homes = homes.head(1000)
+        return polars_points_to_geodataframe(homes, coord_x=coord_x, coord_y=coord_y).explore(**kwargs)
+    
+    def plot_workplaces(self, expr=None, force: bool = False, coord_x="x", coord_y="y", **kwargs):
+        if expr is not None:
+            workplaces = self.work_locations.filter(expr)
+        else:
+            workplaces = self.work_locations
+        if not force and workplaces.height > 10000:
+            workplaces = workplaces.head(10000)
+        return polars_points_to_geodataframe(workplaces, coord_x=coord_x, coord_y=coord_y).explore(**kwargs)
+    
+
+
+    ### OLD BELOW ###
 
     def plot_attraction_zone(self, specific_zone):
         plot.plot_attraction_zone(self.volumes, self.zones, specific_zone, self.tracks)

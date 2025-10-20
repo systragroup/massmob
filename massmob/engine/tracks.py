@@ -4,11 +4,12 @@ import polars as pl
 import numpy as np
 from pyproj import Transformer
 import ciso8601
+import time
 import numpy as np
 import ciso8601
 import shapely
-from shapely.geometry import LineString, Point
-from massmob.engine import stops
+from shapely.geometry import LineString, Point, Polygon, box
+from massmob.engine import stops, utils
 
 
 def tracks_from_points_with_stops(points: pl.DataFrame) -> pl.DataFrame:
@@ -562,3 +563,146 @@ def points_to_tracks(points: pl.DataFrame) -> pl.DataFrame:
     ])
 
     return tracks
+
+def categorize(
+    tracks: pl.DataFrame,
+    perim: Polygon, 
+    bbox_int: gpd.GeoDataFrame,
+    bbox_ext: gpd.GeoDataFrame,
+    points_crs: str = 'EPSG:2154',
+) -> pl.DataFrame:
+    """
+    Returns tracks with type information : intern, extern, exchange - related to zoning perimeter
+    Only converts points to GeoDataFrame if necessary (origin o destination points that are not in/out bbox_int/bbox_ext)
+    """
+    
+    coords_dep = [(p['x'], p['y']) for p in tracks['departure_point'].to_list()]
+    coords_end = [(p['x'], p['y']) for p in tracks['end_point'].to_list()]
+    
+    print('... check origin and destinations points ...')
+    dep_in = utils.point_within_zoning(coords_dep, bbox_ext, bbox_int, perim, points_crs)
+    end_in = utils.point_within_zoning(coords_end, bbox_ext, bbox_int, perim, points_crs)
+
+    print('... conclusion on tracks ...')
+    tracks = tracks.with_columns([
+        pl.Series(name="dep_in", values=dep_in),
+        pl.Series(name="end_in", values=end_in)
+    ])
+    tracks = tracks.with_columns([
+        pl.when(pl.col('dep_in') & pl.col('end_in')).then(pl.lit('intern'))
+        .when(pl.col('dep_in') | pl.col('end_in')).then(pl.lit('exchange'))
+        .otherwise(pl.lit('extern'))
+        .alias("typology")
+    ])
+    return tracks
+
+
+def tracks_to_mapmatch(
+    points: pl.DataFrame,
+    tracks: pl.DataFrame, 
+) -> pl.DataFrame :
+    """
+    points contains a columns 'point_in_bbox' processed formerly (function in utils, using the bbox used to download road network)
+    Analysis on tracks : 
+        - for point in track[point_ids], check if point is in bbox
+        - if nb(point_in_bbox) > 2 : build track in bbox
+    Returns an extract of tracks in bbox to be mapmatched on road / rail network
+    """
+
+    # 1. Explode tracks in point_ids to join with points and identify sequences
+    tracks_exploded = (
+        tracks.select(['phone_id', 'track_id', 'chunk', 'point_ids', 'weight'])
+        .explode('point_ids')
+        .with_columns([
+            pl.col('point_ids').alias('point_id'),
+            pl.int_range(0, pl.count()).over('track_id').alias('seq_idx'),
+        ])
+        .drop('point_ids')
+    )
+
+    # 2. Join with points on point_id
+    tracks_points = (
+        tracks_exploded
+        .join(points.select(['point_id', 'x', 'y', 'duration', 'length', 'accuracy_median', 'point_in_bbox']), on='point_id', how='left')
+        .sort(['track_id', 'seq_idx'])
+        .with_columns([
+            (pl.col("point_in_bbox") != pl.col("point_in_bbox").shift(1)).cast(pl.UInt8).over("track_id").alias("bbox_change"),
+        ])
+        .with_columns([
+            pl.cum_sum('bbox_change').over("track_id").alias("bbox_seq"),
+        ])
+    )
+
+    # 3. Filter on point_in_bbox and rebuild sequences - keep new sequences only if they contain more than 2 points
+    tracks_to_mapmatch = (
+        tracks_points
+        .filter(pl.col("point_in_bbox") == True)
+        .group_by(['chunk', 'phone_id', 'track_id', 'weight', 'bbox_seq'])
+        .agg([
+            pl.col('point_id').alias('point_ids'),
+            pl.count('point_id').alias('n_points'),
+            pl.col("accuracy_median").median().alias("accuracy_median"),
+            pl.col("duration").median().alias("sampling_duration_median"),
+            pl.col("length").median().alias("sampling_distance_median"),
+            pl.col("duration").sum().alias("duration"),
+            pl.col("length").sum().alias("length"),
+            pl.struct(["x", "y"]).implode().alias("coordinates"),
+        ])
+        .with_columns([
+            (pl.col("length") / pl.col("duration")).alias("average_speed")
+        ])
+        .filter(pl.col('n_points') >= 2)
+        .drop('n_points')
+    )
+    return tracks_to_mapmatch
+
+
+def old_categorize(tracks, perimeter):
+    t0 = time.time()
+    
+    # 1. Extraction des coordonnées
+    coords_dep = [(p['x'], p['y']) for p in tracks['departure_point'].to_list()]
+    coords_end = [(p['x'], p['y']) for p in tracks['end_point'].to_list()]
+    print(f"[TIMING] Extraction coords : {time.time()-t0:.3f} s")
+    
+    # 2. Création GeoDataFrames
+    t1 = time.time()
+    points_dep = gpd.GeoDataFrame(
+        geometry=[Point(x, y) for x, y in coords_dep], crs='EPSG:2154'
+    ).to_crs(perimeter.crs)
+    points_end = gpd.GeoDataFrame(
+        geometry=[Point(x, y) for x, y in coords_end], crs='EPSG:2154'
+    ).to_crs(perimeter.crs)
+    print(f"[TIMING] Création GeoDF : {time.time()-t1:.3f} s")
+    
+    # 3. Union du périmètre
+    t2 = time.time()
+    perim = perimeter.union_all()
+    print(f"[TIMING] Union périmètre   : {time.time()-t2:.3f} s")
+    
+    # 4. Test de within
+    t3 = time.time()
+    dep_in = points_dep.within(perim).to_numpy()
+    end_in = points_end.within(perim).to_numpy()
+    print(f"[TIMING] Test within       : {time.time()-t3:.3f} s")
+    print(f"[INFO] Nb évalués départ   : {dep_in.size}")
+    print(f"[INFO] Nb évalués arrivée  : {end_in.size}")
+    
+    # 5. Assemblage Pl
+    t4 = time.time()
+    tracks = tracks.with_columns([
+        pl.Series(dep_in).alias("dep_in"),
+        pl.Series(end_in).alias("end_in"),
+    ])
+    tracks = tracks.with_columns([
+        pl.when(pl.col('dep_in') & pl.col('end_in')).then(pl.lit('intern'))
+        .when(pl.col('dep_in') | pl.col('end_in')).then(pl.lit('exchange'))
+        .otherwise(pl.lit('extern'))
+        .alias("typology")
+    ])
+    print(f"[TIMING] Col. Pl assemble  : {time.time()-t4:.3f} s")
+    print(f"[TIMING] Temps total       : {time.time()-t0:.3f} s")
+    
+    return tracks
+
+
