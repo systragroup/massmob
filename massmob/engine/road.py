@@ -93,7 +93,10 @@ def split_links(links, max_length=100, iterations=10, suffix='network'):
     rl = rl.set_crs(crs)
     
     # to geojson and reload (not necessary - historical reasons only (available in quetzal)
-    roads =  json.loads(rl.drop('geometries', axis=1).to_json())
+    if 'geometries' in rl.columns:
+        roads =  json.loads(rl.drop('geometries', axis=1).to_json())
+    else:
+        roads =  json.loads(rl.to_json())
     node_coordinates = list(get_nodes(roads))
     node_index = dict(
         zip(
