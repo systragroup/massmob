@@ -78,7 +78,7 @@ def get_nodes(geojson_dict):
     return nodes.union(get_intersections(geojson_dict))
 
 
-def split_links(links, max_length=100, iterations=10):
+def split_links(links, max_length=100, iterations=10, suffix='network'):
 
     assert links.crs != None, 'road_links crs must be set (crs in meter, NOT 3857)'
     assert links.crs != 3857, 'CRS error. crs 3857 is not supported. use a local projection in meters.'
@@ -98,7 +98,7 @@ def split_links(links, max_length=100, iterations=10):
     node_index = dict(
         zip(
             node_coordinates, 
-            ['road_node_%i' % i for i in range(len(node_coordinates))]
+            [suffix+'_node_%i' % i for i in range(len(node_coordinates))]
         )
     )
     df = pd.DataFrame(node_index.items(), columns=['coordinates', 'index'])
@@ -113,7 +113,7 @@ def split_links(links, max_length=100, iterations=10):
         f['properties']['b'] = node_index[last]
 
     links = gpd.read_file(json.dumps(roads))
-    links.index = ['road_link_%i' % i for i in range(len(links))]
+    links.index = [suffix+'_link_%i' % i for i in range(len(links))]
 
     # we must force crs, as geojson is assumed to be 4326 by default
     links = links.set_crs(crs, allow_override=True)

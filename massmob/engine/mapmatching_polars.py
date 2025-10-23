@@ -25,7 +25,7 @@ from massmob.engine import utils
 from massmob.engine import road
 
 
-class RoadLinks:
+class Network:
     '''
     Link Object for mapmatching 
 
@@ -37,7 +37,7 @@ class RoadLinks:
 
     returns
     ----------
-    RoadLinks object for mapmatching
+    Network links object for mapmatching
     '''
     def __init__(self, links, n_neighbors_centroid=100, max_distance=None, iterations=20):
 
@@ -58,7 +58,7 @@ class RoadLinks:
             self.links = self.links.reset_index()
 
         if max_distance is not None:
-            self.disaggregated_links, self.disaggregated_nodes = road.split_links(links, max_distance, iterations)
+            self.disaggregated_links, self.disaggregated_nodes = road.split_links(links, max_distance, iterations, suffix='network')
             self.disaggregated_links.reset_index(drop=True, inplace=True)
         else:
             self.disaggregated_links = self.links.copy()
