@@ -150,7 +150,7 @@ class Model():
 
         return restricted
     
-    def cluster_home(
+    def build_home_locations(
         self,
         min_samples: int = 2,
         cluster_epsilon: float = 100.0,
@@ -179,7 +179,7 @@ class Model():
             found_locs,
         )
 
-    def cluster_work(
+    def build_work_locations(
         self,
         min_samples: int = 2,
         cluster_epsilon: float = 100.0,
@@ -372,34 +372,6 @@ class Model():
         zones.rename(columns={'insee':'zone_id'}, inplace=True)
         zones.to_crs(epsg=2154,inplace=True)
         self.zones = zones
-
-    def get_home_place(self):
-        """Attribut un domicile à chaque télephone selon ses emplacement dans la journée.
-        > Nécessite d'utiliser .set_zoning() avant.
-        >Nécessite d'utiliser .filtering() avant."""
-        assert self.zones is not None, 'Zones are not set, use methode .set_zoning() first'
-        if 'domicile' in self.phones.columns:
-            print('Home places already computed')
-        else:
-            domiciles = clustering.cluster_home(self.points, self.zones,NOMBRE_MIN_POINT_PAR_CLUSTER = 3,RAYON_DE_PRISE_EN_COMPTE_DU_CLUSTER = 50)
-            self.phones= self.phones.merge(domiciles,how='left',on='phone_id')
-            homes_in_zones = analysis.number_by_zone(self.zones,self.phones,'domicile')
-            self.zones = self.zones.merge(homes_in_zones,how='left',on='zone_id')
-        
-    def get_work_place(self):
-        """Attribut un lieu d'emploi à chaque télephone selon ses emplacement dans la journée.
-        > Nécessite d'utiliser .set_zoning() avant.
-        >Nécessite d'utiliser .filtering() avant.
-        """
-                 
-        assert self.zones is not None, 'Zones are not set, use methode .set_zoning() first'
-        if 'emploi' in self.phones.columns:
-            print('Work places already computed')
-        else:
-            work = clustering.cluster_work(self.points, self.zones,NOMBRE_MIN_POINT_PAR_CLUSTER = 3,RAYON_DE_PRISE_EN_COMPTE_DU_CLUSTER = 50)
-            self.phones= self.phones.merge(work,how='left',on='phone_id')
-            work_in_zones = analysis.number_by_zone(self.zones,self.phones,'emploi')
-            self.zones = self.zones.merge(work_in_zones,how='left',on='zone_id')
 
     def get_volumes(self):
         self.volumes= volumes.build_od_matrix(self.tracks, self.zones)
