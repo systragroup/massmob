@@ -169,7 +169,6 @@ def stops_identify_noise_trips(
 
     return points
 
-
 def stops_set_trace_id(
     df: pl.DataFrame,
     stop_column: str,

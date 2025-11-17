@@ -69,7 +69,9 @@ def tracks_from_points_with_stops(points: pl.DataFrame) -> pl.DataFrame:
         pl.col("length").sum().alias("length"),
         # List of structs representing (x, y) coordinates in order
         pl.struct(["x", "y"]).implode().alias("coordinates"),
-        pl.col("point_id").implode().alias("point_ids")
+        pl.col("point_id").implode().alias("point_ids"),
+        # List of time codes
+        pl.col("eventDate").implode().alias("timecodes")
     ])
 
     # Compute average speed (length divided by duration) for each track
@@ -293,6 +295,32 @@ def remove_short_stops(points: pl.DataFrame, min_stop_duration: float) -> pl.Dat
     ]).drop(['low_speed', 'trip_group', 'noise_trip', 'short_stop', 'stop_group'])
     return points
 
+def apply_user_stop(points: pl.DataFrame, stop_at_points: list = None, stop_id_col: str = None) -> pl.DataFrame: ## TODO: check modif
+    """
+    Marks trajectory stops at user-specified positions (row indices or column values).
+
+    Args:
+        points (pl.DataFrame): Input DataFrame with 'cut' column.
+        stop_at_points (list): List of row indices or values in stop_id_col.
+        stop_id_col (str): If specified, indicates the column for stop values.
+
+    Returns:
+        pl.DataFrame: Updated DataFrame with modified 'cut' column.
+    """
+    if stop_at_points is not None and len(stop_at_points) > 0:
+        if stop_id_col is None:
+            # By row indices (mask)
+            mask = pl.Series([i in stop_at_points for i in range(points.height)])
+            points = points.with_columns([
+                (pl.col('stop') | mask).alias('stop')
+            ])
+        else:
+            # By custom column values
+            points = points.with_columns([
+                (pl.col('stop') | pl.col(stop_id_col).is_in(stop_at_points)).alias('stop')
+            ])
+    return points
+
 def assign_track_id(points: pl.DataFrame) -> pl.DataFrame:
     """
     Assigns a unique trajectory (track) id for each valid trip segment.
@@ -305,7 +333,8 @@ def assign_track_id(points: pl.DataFrame) -> pl.DataFrame:
     """
     # Duplicate stop points for tracking logic (fake_points)
     points = points.with_columns([pl.lit(False).alias('fake_points')])
-    dup = points.filter(pl.col("stop")).with_columns([
+    dup = points.filter(pl.col("stop")).with_columns([ ##TODO: check modif
+    #dup = points.filter(pl.col("stop") | pl.col("cut")).with_columns([ ##TODO: check modif
         pl.lit(True).alias('fake_points'),
         pl.lit(False).alias('stop')
     ])
@@ -314,7 +343,8 @@ def assign_track_id(points: pl.DataFrame) -> pl.DataFrame:
     points = points.sort(['phone_id', 'ts', 'stop'])
     # Assigns track_id as cumulative sum of stop OR cut event
     points = points.with_columns([
-        ((pl.col('stop').cast(pl.Int32) | pl.col('cut').cast(pl.Int32))
+        ((pl.col('stop').cast(pl.Int32) | pl.col('cut').cast(pl.Int32)) ##TODO: check modif
+        #((pl.col('stop').cast(pl.Int32))# | pl.col('cut').cast(pl.Int32)) ##TODO: check modif
           .cum_sum()
           .alias('track_id')
         )
@@ -383,7 +413,9 @@ def build_tracked_points(
     min_trip_duration_seconds: float = 60 * 2,
     min_trip_distance_meters: float = 200,
     cut_at_points: list = None,
-    cut_id_col: str = None
+    cut_id_col: str = None,
+    stop_at_points: list = None,            ## TODO: check modif
+    stop_id_col: str = None                 ## TODO: check modif
 ) -> pl.DataFrame:
     """
     Identifies, segments, and filters valid trips in a Polars DataFrame of timestamped geolocated points.
@@ -416,6 +448,7 @@ def build_tracked_points(
     points = mark_stop_and_noise(points, idling_phone_meters_distance)
     points = assign_stop_group(points)
     points = remove_short_stops(points, making_a_stop_seconds_delay)
+    points = apply_user_stop(points, stop_at_points, stop_id_col) ##TODO: check modif
     # Assign trip/segment IDs
     points = assign_track_id(points)
     # Filter irrelevant or noisy tracks
@@ -611,7 +644,7 @@ def tracks_to_mapmatch(
 
     # 1. Explode tracks in point_ids to join with points and identify sequences
     tracks_exploded = (
-        tracks.select(['phone_id', 'track_id', 'chunk', 'point_ids', 'weight'])
+        tracks.select(['phone_id', 'track_id', 'chunk', 'point_ids'])
         .explode('point_ids')
         .with_columns([
             pl.col('point_ids').alias('point_id'),
@@ -623,7 +656,7 @@ def tracks_to_mapmatch(
     # 2. Join with points on point_id
     tracks_points = (
         tracks_exploded
-        .join(points.select(['point_id', 'x', 'y', 'duration', 'length', 'accuracy_median', 'point_in_bbox']), on='point_id', how='left')
+        .join(points.select(['point_id', 'x', 'y', 'eventDate', 'duration', 'length', 'accuracy_median', 'point_in_bbox']), on='point_id', how='left')
         .sort(['track_id', 'seq_idx'])
         .with_columns([
             (pl.col("point_in_bbox") != pl.col("point_in_bbox").shift(1)).cast(pl.UInt8).over("track_id").alias("bbox_change"),
@@ -637,7 +670,7 @@ def tracks_to_mapmatch(
     tracks_to_mapmatch = (
         tracks_points
         .filter(pl.col("point_in_bbox") == True)
-        .group_by(['chunk', 'phone_id', 'track_id', 'weight', 'bbox_seq'])
+        .group_by(['chunk', 'phone_id', 'track_id', 'bbox_seq'])
         .agg([
             pl.col('point_id').alias('point_ids'),
             pl.count('point_id').alias('n_points'),
@@ -647,6 +680,7 @@ def tracks_to_mapmatch(
             pl.col("duration").sum().alias("duration"),
             pl.col("length").sum().alias("length"),
             pl.struct(["x", "y"]).implode().alias("coordinates"),
+            pl.col('eventDate').implode().alias('timecodes')
         ])
         .with_columns([
             (pl.col("length") / pl.col("duration")).alias("average_speed")
