@@ -688,6 +688,8 @@ def tracks_to_mapmatch(
         .filter(pl.col('n_points') >= 2)
         .drop('n_points')
     )
+
+    # TODO: les index tracks /points ne sont du coup plus valides...
     return tracks_to_mapmatch
 
 
