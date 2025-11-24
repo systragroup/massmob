@@ -20,7 +20,7 @@ def plot_hist_cumul(tracks, field,xmax,color,bins):
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax2.legend(lines + lines2, labels + labels2, loc='upper right')
     fig.tight_layout()
-    ax1.set_title(f'Cumulative distribution and histogram of{field}')
+    ax1.set_title(f'Cumulative distribution and histogram of {field}')
     ax1.set_xlabel(f'{field}')
     ax1.set_ylabel('Cumulative distribution')
     ax2.set_ylabel('Number of traces')
