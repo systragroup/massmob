@@ -55,7 +55,7 @@ def split_line_into_segments(line: LineString, max_length: float) -> list[LineSt
 
 def multi_split_vectorized(gdf: gpd.GeoDataFrame, max_length: float) -> gpd.GeoDataFrame:
     """Split all long lines into segments <= max_length in a single pass."""
-    gdf = gdf.copy()
+    temp = gdf.copy()
     temp["geometry"] = temp.geometry.apply(lambda geom: split_line_into_segments(geom, max_length))
     temp = gdf.explode("geometry", index_parts=False)
     gdf = gpd.GeoDataFrame(temp, geometry="geometry", crs=gdf.crs)

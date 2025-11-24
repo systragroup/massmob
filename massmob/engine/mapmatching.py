@@ -39,9 +39,10 @@ class RoadLinks:
     ----------
     RoadLinks object for mapmatching
     '''
-    def __init__(self, links, n_neighbors_centroid=100, max_distance=None, iterations=20):
+    def __init__(self, links, nodes=None, n_neighbors_centroid=100, max_distance=None, iterations=20):
 
         self.links = links
+        self.nodes = nodes
         assert self.links.crs != None, 'road_links crs must be set (crs in meter, NOT 3857)'
         assert self.links.crs != 3857, 'CRS error. crs 3857 is not supported. use a local projection in meters.'
         assert self.links.crs != 4326, 'CRS error, crs 4326 is not supported, use a crs in meter (NOT 3857)'
