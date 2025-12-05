@@ -1,8 +1,30 @@
 import geopandas as gpd
 import numpy as np
 from shapely.geometry import LineString, Point
+from shapely.ops import split as shp_split
 from tqdm import tqdm
 
+def cut_link_by_geometry(link_geom, geometry_filter):
+    """
+    Coupe un lien en parties inside / outside.
+    Retourne une liste de tuples : (geom_part, inside_bool)
+    """
+
+    # Split the geometry at the boundary of geometry_filter
+    try:
+        splitted = shp_split(link_geom, geometry_filter)
+    except Exception:
+        # If split fails, consider whole geometry as outside or inside depending on centroid
+        inside = link_geom.centroid.within(geometry_filter)
+        return [(link_geom, inside)]
+
+    parts = []
+
+    for part in splitted.geoms:
+        inside = part.centroid.within(geometry_filter)
+        parts.append((part, inside))
+
+    return parts
 
 def split_line_into_segments(line: LineString, max_length: float) -> list[LineString]:
     """
@@ -57,10 +79,10 @@ def multi_split_vectorized(gdf: gpd.GeoDataFrame, max_length: float) -> gpd.GeoD
     """Split all long lines into segments <= max_length in a single pass."""
     temp = gdf.copy()
     temp["geometry"] = temp.geometry.apply(lambda geom: split_line_into_segments(geom, max_length))
-    temp = gdf.explode("geometry", index_parts=False)
-    gdf = gpd.GeoDataFrame(temp, geometry="geometry", crs=gdf.crs)
-    gdf["length"] = gdf.geometry.length
-    return gdf
+    temp = temp.explode("geometry", index_parts=False)
+    temp = gpd.GeoDataFrame(temp, geometry="geometry", crs=gdf.crs)
+    temp["length"] = temp.geometry.length
+    return temp
 
 
 def get_intersections_gdf(gdf: gpd.GeoDataFrame) -> set:
@@ -98,13 +120,14 @@ def split_links_vectorized(
     links = links.copy()
     links["length"] = links.geometry.length
 
-    # --- Split long lines ---
+    # --- Split long links ---
     split_gdf = multi_split_vectorized(links, max_length)
     split_gdf["length"] = split_gdf.geometry.length
 
     # --- Build nodes ---
+    suffix = f"{suffix}_" if suffix is not None else ""
     node_coords = list(get_nodes_gdf(split_gdf))
-    node_index = dict(zip(node_coords, [f"{suffix}_node_{i}" for i in range(len(node_coords))]))
+    node_index = dict(zip(node_coords, [f"{suffix}node_{i}" for i in range(len(node_coords))]))
 
     nodes_df = gpd.GeoDataFrame(
         [{"index": idx, "geometry": Point(coord)} for coord, idx in node_index.items()],
@@ -115,6 +138,6 @@ def split_links_vectorized(
     # --- Add node references to links ---
     split_gdf["a"] = split_gdf.geometry.apply(lambda geom: node_index[tuple(geom.coords[0])])
     split_gdf["b"] = split_gdf.geometry.apply(lambda geom: node_index[tuple(geom.coords[-1])])
-    split_gdf.index = [f"{suffix}_link_{i}" for i in range(len(split_gdf))]
+    split_gdf.index = [f"{suffix}link_{i}" for i in range(len(split_gdf))]
 
     return split_gdf, nodes_df

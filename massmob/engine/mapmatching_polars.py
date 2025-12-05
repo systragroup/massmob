@@ -39,7 +39,7 @@ class Network:
     ----------
     Network links object for mapmatching
     '''
-    def __init__(self, links, nodes=None, n_neighbors_centroid=100, max_distance=None, iterations=20):
+    def __init__(self, links, nodes=None, weight="length", n_neighbors_centroid=100, max_distance=None, iterations=20):
 
         self.links = links
         self.nodes = nodes
@@ -50,10 +50,13 @@ class Network:
         self.crs = links.crs
         self.n_neighbors_centroid = n_neighbors_centroid
         
+
         try:
             self.links['length']
         except Exception:
             self.links['length'] = self.links.length
+
+        self.links["length"] = self.links[weight]
 
         if 'index' not in self.links.columns:
             self.links = self.links.reset_index()
@@ -71,7 +74,7 @@ class Network:
 
         
     def get_sparse_matrix(self):
-        self.mat, self.node_index = sparse_matrix(self.links[['a', 'b', 'length']].values)
+        self.mat, self.node_index = sparse_matrix(self.links[['a', 'b', "length"]].values)
         self.index_node = {v: k for k, v in self.node_index.items()}
 
     def get_dict(self):
@@ -79,7 +82,7 @@ class Network:
         self.dict_node_a = self.links['a'].to_dict()
         self.dict_node_b = self.links['b'].to_dict()
         self.links_index_dict = self.links['index'].to_dict()
-        self.dict_link = self.links.sort_values('length', ascending=True).drop_duplicates(['a', 'b'], keep='first').set_index(['a', 'b'], drop=False)['index'].to_dict()
+        self.dict_link = self.links.sort_values("length", ascending=True).drop_duplicates(['a', 'b'], keep='first').set_index(['a', 'b'], drop=False)['index'].to_dict()
         self.length_dict = self.links['length'].to_dict()
         self.geom_dict = dict(self.links['geometry'])
         self.disaggregated_geom_dict = dict(self.disaggregated_links['geometry'])
@@ -257,7 +260,7 @@ def _multi_mapmatching(
 
 def _mapmatching(
         gps_track, road_links,
-        n_neighbors=10, distance_max=1000,
+        n_neighbors=10, distance_max=100,
         routing=False, plot=False):
     """
     gps_track: ordered list of geometry Point (in metre)
@@ -295,10 +298,10 @@ def _mapmatching(
         return indices
 
     def emission_logprob(distance, SIGMA=SIGMA):
-        # c = 1 / (SIGMA * np.sqrt(2 * np.pi))
-        # return c*np.exp(-0.5*(distance/SIGMA)**2)
+        c = 1 / (SIGMA * np.sqrt(2 * np.pi))
+        return c * np.exp(-0.5 * (distance / SIGMA)**2)
         # return -np.log10(np.exp(-0.5*(distance/SIGMA)**2))
-        return 0.5 * (distance / SIGMA) ** 2  # Drop constant with log. its the same for everyone.
+        # return 0.5 * (distance / SIGMA) ** 2  # Drop constant with log. its the same for everyone.
 
     def transition_logprob(dijkstra_dist, gps_dist, BETA=BETA):
         c = 1 / BETA
