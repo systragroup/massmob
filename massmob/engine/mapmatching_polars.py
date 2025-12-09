@@ -39,10 +39,12 @@ class Network:
     ----------
     Network links object for mapmatching
     '''
-    def __init__(self, links, nodes=None, weight="length", n_neighbors_centroid=100, max_distance=None, iterations=20):
+    def __init__(self, links, nodes=None, weight="length", penalty=None, n_neighbors_centroid=100, max_distance=None, iterations=20):
 
         self.links = links
         self.nodes = nodes
+        self.weight = weight
+        self.penalty = penalty
         assert self.links.crs != None, 'road_links crs must be set (crs in meter, NOT 3857)'
         assert self.links.crs != 3857, 'CRS error. crs 3857 is not supported. use a local projection in meters.'
         assert self.links.crs != 4326, 'CRS error, crs 4326 is not supported, use a crs in meter (NOT 3857)'
@@ -56,25 +58,26 @@ class Network:
         except Exception:
             self.links['length'] = self.links.length
 
-        self.links["length"] = self.links[weight]
+        self.links["weight+penalty"] = self.links[weight] + self.links.get(penalty, 0)
 
         if 'index' not in self.links.columns:
             self.links = self.links.reset_index()
 
         if max_distance is not None:
             self.disaggregated_links, self.disaggregated_nodes = road.split_links_vectorized(links, max_distance, suffix='network')
+            self.disaggregated_links = self.disaggregated_links[self.disaggregated_links['length'] > 0]  # remove rtw, etc.
             self.disaggregated_links.reset_index(drop=True, inplace=True)
         else:
-            self.disaggregated_links = self.links.copy()
+            self.disaggregated_links = self.links[self.links.length>0].copy()  # remove rtw, etc.
             self.disaggregated_nodes = self.nodes.copy()
 
         self.get_sparse_matrix()
         self.get_dict()
-        self.fit_nearest_model()
+        self.fit_nearest_models()
 
         
     def get_sparse_matrix(self):
-        self.mat, self.node_index = sparse_matrix(self.links[['a', 'b', "length"]].values)
+        self.mat, self.node_index = sparse_matrix(self.links[['a', 'b', "weight+penalty"]].values)
         self.index_node = {v: k for k, v in self.node_index.items()}
 
     def get_dict(self):
@@ -84,18 +87,34 @@ class Network:
         self.links_index_dict = self.links['index'].to_dict()
         self.dict_link = self.links.sort_values("length", ascending=True).drop_duplicates(['a', 'b'], keep='first').set_index(['a', 'b'], drop=False)['index'].to_dict()
         self.length_dict = self.links['length'].to_dict()
+        self.weight_dict = self.links[self.weight].to_dict()
+        self.penalty_dict = self.links[self.penalty].to_dict() if self.penalty else {}
         self.geom_dict = dict(self.links['geometry'])
         self.disaggregated_geom_dict = dict(self.disaggregated_links['geometry'])
-        self.cluster_dict = self.disaggregated_links['index'].to_dict()
 
-    def fit_nearest_model(self):
+    def fit_nearest_models(self, adhoc_nearest_models={}):
+        # adhoc_nearest_models: {label: [links, neighbors]}
+
         # Fit Nearest neighbors model
         links = utils.add_geometry_coordinates(self.disaggregated_links, columns=['x_geometry', 'y_geometry'])
+
+        # main model
+        nneighbors = self.n_neighbors_centroid
+        self.main_cluster_dict = links['index'].to_dict()
         x = links[['x_geometry', 'y_geometry']].values
+        if len(links) < nneighbors: nneighbors = len(links)
+        self.nbrs = {"main": NearestNeighbors(n_neighbors=nneighbors, algorithm='ball_tree').fit(x)}
+        
+        # adhoc models
+        for k,v in adhoc_nearest_models.items():
+            nneighbors = v[1]
+            temp_links = v[0].reset_index(drop=True)
+            temp_links = utils.add_geometry_coordinates(temp_links, columns=['x_geometry', 'y_geometry'])
+            self.__setattr__(f"{k}_cluster_dict", temp_links['index'].to_dict())
+            x = temp_links[['x_geometry', 'y_geometry']].values
+            if len(temp_links) < nneighbors: nneighbors = len(temp_links)
 
-        if len(links) < self.n_neighbors_centroid: self.n_neighbors_centroid = len(links)
-
-        self.nbrs = NearestNeighbors(n_neighbors=self.n_neighbors_centroid, algorithm='ball_tree').fit(x)
+            self.nbrs.update({k: NearestNeighbors(n_neighbors=nneighbors, algorithm='ball_tree').fit(x)})
 
 
 def points_to_tracks(points, by='track_id', time_col='eventDate8601', seq_col='node_seq'):
