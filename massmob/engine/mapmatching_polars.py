@@ -385,7 +385,7 @@ def emission_logprob(distance, SIGMA=2):
     return (distance / SIGMA) ** 2
 
 def transition_logprob(dijkstra_time, gps_time, BETA=2, ALPHA=0.75, avg_rl_speed_kmh=30):
-    time_delta = (abs(dijkstra_time - gps_time * ALPHA) * avg_rl_speed_kmh / 3.6 / BETA) ** 2 # tendence à favoriser les trajets plus longs si gps time est grand
+    time_delta = (abs(dijkstra_time - gps_time * ALPHA) * avg_rl_speed_kmh / 3.6 / BETA) ** 2 # tendance à favoriser les trajets plus longs si gps time est grand
     abs_time = (dijkstra_time * avg_rl_speed_kmh / 3.6 / BETA) ** 2 # pour éviter les trajets trop longs
     return (time_delta  + abs_time) 
 
