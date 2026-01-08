@@ -28,6 +28,3 @@ def split_quenedi_rlinks(road_links, oneway='0'):
     links_r['geometry'] = links_r['geometry'].apply(lambda g: _reverse_geom(g))
     road_links = pd.concat([road_links, links_r])
     return road_links
-
-
-# TODO: add OSM import from perimeter directly

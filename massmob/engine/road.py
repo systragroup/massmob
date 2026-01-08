@@ -1,5 +1,6 @@
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 from shapely.geometry import LineString, Point
 from shapely.ops import split as shp_split
 from tqdm import tqdm
@@ -141,3 +142,83 @@ def split_links_vectorized(
     split_gdf.index = [f"{suffix}link_{i}" for i in range(len(split_gdf))]
 
     return split_gdf, nodes_df
+
+
+def disaggregate_network(
+    links,
+    nodes=None,
+    max_distance=None,
+    geometry_filter=None,
+    suffix='road'
+):
+
+    assert links.crs is not None, "CRS must be projected in meters."
+    assert links.crs.to_epsg() not in [3857, 4326], "CRS must be projected in meters."
+
+    links = links.copy()
+    crs = links.crs
+
+    if max_distance is None or geometry_filter is None:
+        # comportement original
+        return split_links_vectorized(links, max_distance, suffix) if max_distance else (links, nodes)
+
+    inside_parts = []
+    outside_parts = []
+
+    # --- Étape 1 : découper chaque lien en morceaux inside / outside
+    for _, row in links.iterrows():
+        geom = row.geometry
+        parts = cut_link_by_geometry(geom, geometry_filter)
+
+        for part_geom, inside in parts:
+            new_row = row.copy()
+            new_row.geometry = part_geom
+
+            if inside:
+                inside_parts.append(new_row)
+            else:
+                outside_parts.append(new_row)
+
+    inside_gdf = gpd.GeoDataFrame(inside_parts, geometry="geometry", crs=crs)
+    outside_gdf = gpd.GeoDataFrame(outside_parts, geometry="geometry", crs=crs)
+
+    # --- Étape 2 : désagréger par longueur les seuls morceaux inside
+    if len(inside_gdf) > 0:
+        inside_disagg, inside_nodes = split_links_vectorized(
+            inside_gdf,
+            max_distance,
+            suffix=suffix
+        )
+    else:
+        inside_disagg = gpd.GeoDataFrame([], geometry="geometry", crs=crs)
+
+    # --- Étape 3 : recomposer le réseau complet
+    all_links = pd.concat([outside_gdf, inside_disagg], ignore_index=True)
+
+    # --- Étape 4 : reconstruire tous les nœuds pour garantir connexion
+    def extract_nodes(geom):
+        c = list(geom.coords)
+        return tuple(c[0]), tuple(c[-1])
+
+    node_coords = set()
+    for geom in all_links.geometry:
+        a, b = extract_nodes(geom)
+        node_coords.add(a)
+        node_coords.add(b)
+
+    suffix2 = f"{suffix}_"
+    node_index = {coord: f"{suffix2}node_{i}" for i, coord in enumerate(node_coords)}
+
+    # assign endpoints
+    all_links["a"] = all_links.geometry.apply(lambda g: node_index[tuple(g.coords[0])])
+    all_links["b"] = all_links.geometry.apply(lambda g: node_index[tuple(g.coords[-1])])
+
+    all_links.index = [f"{suffix2}link_{i}" for i in range(len(all_links))]
+
+    nodes_df = gpd.GeoDataFrame(
+        [{"index": idx, "geometry": Point(coord)} for coord, idx in node_index.items()],
+        geometry="geometry",
+        crs=crs
+    ).set_index("index")
+
+    return all_links, nodes_df
