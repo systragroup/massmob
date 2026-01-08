@@ -46,8 +46,9 @@ def fetch_with_retry(
                 print("[FAIL] Erreur réseau.")
                 # print(e)
             if attempt < max_retries_per_endpoint:
+                backoff = min(backoff, max_backoff)
                 print(f"[WAIT] Attente {backoff}s avant retry…")
-                time.sleep(min(backoff, max_backoff))
+                time.sleep(backoff)
                 backoff *= backoff_factor
 
         print("[INFO] Changement de miroir…")
