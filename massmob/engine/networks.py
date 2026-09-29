@@ -143,7 +143,7 @@ def process_networks(
         walk_links["network_type"] = "walk"
         walk_links["oneway"] = 0
 
-        walk_links, walk_nodes = road_io.get_links_and_nodes_gdf(walk_links, suffix="walk_")
+        walk_links, walk_nodes = road_io.get_links_and_nodes_gdf(walk_links)
         walk_links = walk_links.set_crs(epsg=epsg, allow_override=True)
         walk_links["length"] = walk_links.length
 

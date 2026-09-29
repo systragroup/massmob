@@ -8,9 +8,9 @@ import time
 
 ENDPOINTS: List[str] = [
     "https://overpass-api.de/api/interpreter",
-    # "https://overpass.kumi.systems/api/interpreter",
-    # "https://overpass.openstreetmap.ru/api/interpreter",
-    # "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.openstreetmap.ru/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
 
 def is_html_error(resp: requests.Response) -> bool:
@@ -27,13 +27,17 @@ def fetch_with_retry(
     max_backoff: float = 30.0,
     http_timeout: int = 60,
 ):
-    for ep in endpoints:
-        print(f"[INFO] Endpoint: {ep}")
+    headers = {
+        "User-Agent": "industrialisation-network/1.0"
+    }
+    for attempt in range(1, max_retries_per_endpoint + 1):
         backoff = initial_backoff
-        for attempt in range(1, max_retries_per_endpoint + 1):
+        for ep in endpoints:
+            print(f"[INFO] Endpoint: {ep}")
+            
             print(f"[TRY] Tentative {attempt}/{max_retries_per_endpoint}")
             try:
-                resp = requests.post(ep, data=query, timeout=http_timeout, verify=False)
+                resp = requests.post(ep, data=query, timeout=http_timeout, verify=False, headers=headers)
                 if resp.status_code == 200 and not is_html_error(resp):
                     print("[OK] Succès.")
                     return resp.json()
@@ -45,21 +49,20 @@ def fetch_with_retry(
             except requests.RequestException as e:
                 print("[FAIL] Erreur réseau.")
                 # print(e)
-            if attempt < max_retries_per_endpoint:
+            print("[INFO] Changement de miroir…")
+            if len(endpoints) == 1 and attempt < max_retries_per_endpoint:
                 backoff = min(backoff, max_backoff)
                 print(f"[WAIT] Attente {backoff}s avant retry…")
                 time.sleep(backoff)
                 backoff *= backoff_factor
-
-        print("[INFO] Changement de miroir…")
+            
 
     raise RuntimeError("Tous les endpoints ont échoué après plusieurs tentatives.")
 
 
 def download_from_overpass(
     network: str,
-    bbox: tuple,
-    # overpass_url: str = "https://overpass-api.de/api/interpreter",
+    bbox: tuple
 ):
     """
     Returns links and nodes un gpd.GeoDataFrame epsg 4326 for the requested network
@@ -68,6 +71,7 @@ def download_from_overpass(
     bbox: tuple
         from previous selection leafmap (epsg 4326), format (minlon, minlat, maxlon, maxlat)
     """
+    
     bbox_str = f"{bbox[1]},{bbox[0]},{bbox[3]},{bbox[2]}"       # minlat,minlon,maxlat,maxlon = (south,west,north,east) pour Overpass
     def query(network):
         if network == 'rail':
